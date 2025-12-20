@@ -2,19 +2,37 @@
 """
 Q23 entrypoint: runs one or more strategies (local).
 
-Reads toggles from environment:
-  Q23_RUN_V4=true/false
-  Q23_RUN_NASNYS1010=true/false
-  Q23_RUN_Q23LSNEW3=true/false
+Configuration sources (in order of priority):
+  1. enabled_strategies.json - Managed by Strategy Warehouse in dashboard (RECOMMENDED)
+  2. Environment variables - Q23_RUN_<strategy_id>=true/false (DEPRECATED, kept for backward compatibility)
+
+The enabled_strategies.json file is the PRIMARY and RECOMMENDED way to enable/disable strategies.
+It is created and updated by the Strategy Warehouse page in the dashboard.
+
+NOTE: The .env file is ONLY used for API_KEY and other environment variables (Q23_CONDA_ENV, etc.).
+Strategy enabling should be done via enabled_strategies.json, NOT via .env file.
+
+Environment variables (Q23_RUN_<strategy_id>) can still override JSON config if explicitly set,
+but this is deprecated. Use the Strategy Warehouse dashboard instead.
+
+Freshness Check:
+  By default, strategies with a run from today (YYYYMMDD_* tag) are skipped to save time.
+  Use Q23_FORCE_RERUN=true to force re-running all strategies regardless of freshness.
+
+Legacy example (DEPRECATED - use Strategy Warehouse instead):
+  Q23_RUN_V4=true
+  Q23_RUN_nasnys_v4=true
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 
 def _str2bool(v: str) -> bool:
@@ -62,7 +80,7 @@ def _require_api_key() -> None:
     if not api_key:
         print(
             "\nERROR: API_KEY is not set.\n"
-            "Put it in /Users/svenbenson/Q23_QUANT_SYSTEM/.env as:\n"
+            "Put it in /Users/svenbenson/Q23_QUANT_SYSTEM 2/.env as:\n"
             "  API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n",
             file=sys.stderr,
         )
@@ -76,7 +94,8 @@ class RunResult:
     message: str = ""
 
 
-def _run_v4(tag: Optional[str] = None) -> RunResult:
+def _run_legacy_v4(tag: Optional[str] = None) -> RunResult:
+    """Run legacy StrategyEngine (backward compatibility)."""
     from q23.strategy.engine import StrategyEngine
 
     eng = StrategyEngine()
@@ -92,8 +111,119 @@ def _run_v4(tag: Optional[str] = None) -> RunResult:
     return RunResult(name="v4", rc=0, message=msg)
 
 
-def _run_legacy_stub(name: str) -> RunResult:
-    return RunResult(name=name, rc=0, message="(legacy not wired yet)")
+def _run_strategy(strategy_id: str, tag: Optional[str] = None) -> RunResult:
+    """Run a registered strategy from StrategyRegistry."""
+    try:
+        from q23.strategies.registry import StrategyRegistry
+        
+        strategy = StrategyRegistry.get_instance(strategy_id)
+        artifacts = strategy.run(tag=tag, write_outputs=True)
+        
+        output_dir = strategy.get_output_dir()
+        msg = f"{strategy_id} done. output_dir={output_dir}"
+        return RunResult(name=strategy_id, rc=0, message=msg)
+    except Exception as e:
+        error_msg = f"Failed to run {strategy_id}: {str(e)}"
+        print(f"ERROR: {error_msg}", file=sys.stderr)
+        return RunResult(name=strategy_id, rc=1, message=error_msg)
+
+
+def _get_env_var_name(strategy_id: str) -> str:
+    """Convert strategy_id to environment variable name (Q23_RUN_<strategy_id>)."""
+    return f"Q23_RUN_{strategy_id.upper()}"
+
+
+def _has_fresh_run(strategy_id: str, today_prefix: str) -> Tuple[bool, Optional[str]]:
+    """Check if strategy has a run from today.
+    
+    Args:
+        strategy_id: The strategy ID to check
+        today_prefix: Today's date as YYYYMMDD
+    
+    Returns:
+        Tuple of (is_fresh, latest_tag) where:
+        - is_fresh: True if a tag starting with today_prefix exists
+        - latest_tag: The most recent tag found (or None if no tags)
+    """
+    try:
+        from q23.dashboard.core import discover_strategy_tags
+        
+        tags = discover_strategy_tags(strategy_id)
+        if not tags:
+            return False, None
+        
+        latest_tag = tags[0]  # Tags are sorted by date, newest first
+        is_fresh = latest_tag.startswith(today_prefix)
+        return is_fresh, latest_tag
+    except Exception:
+        # If we can't check, assume not fresh (will run)
+        return False, None
+
+
+def _get_freshness_status(
+    strategy_ids: List[str],
+    today_prefix: str,
+) -> Dict[str, Tuple[bool, Optional[str]]]:
+    """Get freshness status for all strategies.
+    
+    Args:
+        strategy_ids: List of strategy IDs to check
+        today_prefix: Today's date as YYYYMMDD
+    
+    Returns:
+        Dict mapping strategy_id -> (is_fresh, latest_tag)
+    """
+    status = {}
+    for strategy_id in strategy_ids:
+        status[strategy_id] = _has_fresh_run(strategy_id, today_prefix)
+    return status
+
+
+def _get_enabled_strategies_config() -> Dict[str, bool]:
+    """
+    Load enabled strategies from JSON config.
+    
+    The config file is managed by the Strategy Warehouse in the dashboard.
+    Returns empty dict if file doesn't exist.
+    """
+    config_path = _project_root() / "src" / "q23" / "strategies" / "enabled_strategies.json"
+    
+    if not config_path.exists():
+        return {}
+    
+    try:
+        data = json.loads(config_path.read_text())
+        return data.get("enabled", {})
+    except Exception as e:
+        print(f"WARNING: Could not load enabled_strategies.json: {e}", file=sys.stderr)
+        return {}
+
+
+def _get_strategy_enabled_status(strategy_id: str, json_config: Dict[str, bool]) -> bool:
+    """
+    Check if a strategy is enabled.
+    
+    Priority:
+    1. Environment variable (if explicitly set) - DEPRECATED, kept for backward compatibility
+    2. JSON config (enabled_strategies.json) - RECOMMENDED
+    3. Default (False)
+    
+    Note: Environment variable override is deprecated. Use Strategy Warehouse dashboard instead.
+    """
+    env_var = _get_env_var_name(strategy_id)
+    env_value = os.environ.get(env_var, "").strip()
+    
+    # If env var is explicitly set, use it (but warn about deprecation)
+    if env_value:
+        print(
+            f"WARNING: Using deprecated environment variable {env_var} for strategy enabling. "
+            f"Please use Strategy Warehouse dashboard (enabled_strategies.json) instead.",
+            file=sys.stderr,
+        )
+        return _str2bool(env_value)
+    
+    # Otherwise use JSON config (recommended)
+    return json_config.get(strategy_id, False)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -101,38 +231,131 @@ def main(argv: Optional[list[str]] = None) -> int:
     _require_api_key()
 
     tag = os.environ.get("Q23_TAG", "").strip() or None
+    force_rerun = _str2bool(os.environ.get("Q23_FORCE_RERUN", "false"))
+    today_prefix = datetime.now().strftime("%Y%m%d")
 
-    run_v4 = _str2bool(os.environ.get("Q23_RUN_V4", "true"))
-    run_nasnys1010 = _str2bool(os.environ.get("Q23_RUN_NASNYS1010", "false"))
-    run_q23lsnew3 = _str2bool(os.environ.get("Q23_RUN_Q23LSNEW3", "false"))
+    # Discover available strategies from registry
+    available_strategies = []
+    try:
+        from q23.strategies.registry import StrategyRegistry
+        available_strategies = StrategyRegistry.list_ids()
+    except Exception as e:
+        print(f"WARNING: Could not discover strategies: {e}", file=sys.stderr)
 
+    # Load JSON config from Strategy Warehouse
+    json_config = _get_enabled_strategies_config()
+    config_source = "enabled_strategies.json" if json_config else "environment variables"
+    
+    # Check legacy StrategyEngine flag (backward compatibility)
+    run_legacy_v4 = _str2bool(os.environ.get("Q23_RUN_V4", "false"))
+
+    # Check flags for each registered strategy (JSON config + env vars)
+    strategy_flags = {}
+    for strategy_id in available_strategies:
+        strategy_flags[strategy_id] = _get_strategy_enabled_status(strategy_id, json_config)
+
+    # Get freshness status for all strategies
+    freshness_status = _get_freshness_status(available_strategies, today_prefix)
+
+    # Print status header
     print("")
     print("Q23 strategy runner")
+    print(f"  Config source: {config_source}")
     print(f"  tag: {tag}")
-    print(f"  Q23_RUN_V4: {run_v4}")
-    print(f"  Q23_RUN_NASNYS1010: {run_nasnys1010}")
-    print(f"  Q23_RUN_Q23LSNEW3: {run_q23lsnew3}")
+    print(f"  Force rerun: {force_rerun}")
+    print(f"  Today: {today_prefix}")
+    print(f"  Q23_RUN_V4 (legacy): {run_legacy_v4}")
+    print("")
+    
+    # Print strategy status with freshness info
+    print("  Strategy status:")
+    strategies_to_run = []
+    strategies_to_skip = []
+    
+    for strategy_id in available_strategies:
+        enabled = strategy_flags.get(strategy_id, False)
+        source = "json" if strategy_id in json_config else "env/default"
+        is_fresh, latest_tag = freshness_status.get(strategy_id, (False, None))
+        
+        if not enabled:
+            status_str = "disabled"
+        elif force_rerun:
+            status_str = "enabled (force rerun)"
+            strategies_to_run.append(strategy_id)
+        elif is_fresh:
+            status_str = f"enabled (fresh: {latest_tag} - skipping)"
+            strategies_to_skip.append(strategy_id)
+        elif latest_tag:
+            status_str = f"enabled (stale: {latest_tag} - will run)"
+            strategies_to_run.append(strategy_id)
+        else:
+            status_str = "enabled (no data - will run)"
+            strategies_to_run.append(strategy_id)
+        
+        print(f"    {strategy_id}: {status_str}")
+    
+    print("")
+    
+    # Summary
+    if strategies_to_skip and not force_rerun:
+        print(f"  Skipping {len(strategies_to_skip)} fresh strateg{'y' if len(strategies_to_skip) == 1 else 'ies'}")
+    if strategies_to_run:
+        print(f"  Running {len(strategies_to_run)} strateg{'y' if len(strategies_to_run) == 1 else 'ies'}")
     print("")
 
     rc = 0
 
-    if run_v4:
-        print(">> Running v4 modular strategy...")
-        r = _run_v4(tag=tag)
+    # Run legacy StrategyEngine if enabled
+    if run_legacy_v4:
+        print(">> Running legacy v4 StrategyEngine...")
+        r = _run_legacy_v4(tag=tag)
         print(f">> {r.name}: {r.message}")
-        rc = max(rc, r.rc)
+        if r.rc != 0:
+            rc = max(rc, r.rc)
 
-    if run_nasnys1010:
-        print(">> Running NASNYS1010 (legacy)...")
-        r = _run_legacy_stub("NASNYS1010")
+    # Run registered strategies if enabled and not fresh (or force_rerun)
+    for strategy_id, enabled in strategy_flags.items():
+        if not enabled:
+            continue
+            
+        is_fresh, latest_tag = freshness_status.get(strategy_id, (False, None))
+        
+        # Skip fresh strategies unless force_rerun is set
+        if is_fresh and not force_rerun:
+            print(f">> Skipping {strategy_id} (fresh run from today: {latest_tag})")
+            continue
+        
+        print(f">> Running {strategy_id}...")
+        r = _run_strategy(strategy_id, tag=tag)
         print(f">> {r.name}: {r.message}")
-        rc = max(rc, r.rc)
+        if r.rc != 0:
+            rc = max(rc, r.rc)
 
-    if run_q23lsnew3:
-        print(">> Running Q23LSNEW3 (legacy)...")
-        r = _run_legacy_stub("Q23LSNEW3")
-        print(f">> {r.name}: {r.message}")
-        rc = max(rc, r.rc)
+    # Warn if nothing was enabled
+    if not run_legacy_v4 and not any(strategy_flags.values()):
+        print("WARNING: No strategies enabled.")
+        print("")
+        print("To enable strategies:")
+        print("  1. Use the Strategy Warehouse in the dashboard (RECOMMENDED)")
+        print("     This updates enabled_strategies.json automatically")
+        print("")
+        print("  2. Manually edit enabled_strategies.json:")
+        print(f"     File: {_project_root() / 'src' / 'q23' / 'strategies' / 'enabled_strategies.json'}")
+        print("     Set \"enabled\": { \"<strategy_id>\": true }")
+        print("")
+        print("  (Legacy: Environment variables Q23_RUN_<strategy_id>=true are deprecated)")
+        print("")
+        print("Available strategies:")
+        for strategy_id in available_strategies:
+            print(f"  - {strategy_id}")
+        print("")
+        print("Or run legacy engine: Q23_RUN_V4=true (deprecated)")
+    
+    # Hint about force rerun if all were skipped
+    elif strategies_to_skip and not strategies_to_run and not force_rerun:
+        print("")
+        print("All enabled strategies have fresh data from today.")
+        print("To force re-run: Q23_FORCE_RERUN=true")
 
     print("")
     print("Done.")

@@ -45,6 +45,20 @@ from q23.dashboard.components.styles import (
     performance_badge,
     metric_value_class,
     style_dataframe,
+    # New reusable KPI components
+    KPIMetric,
+    render_kpi_row,
+    render_kpi_grid,
+    render_section_title,
+    render_strategy_header_v2,
+    get_value_class,
+    # Strategy color utilities
+    STRATEGY_COLORS,
+    BENCHMARK_COLORS,
+    BENCHMARK_STRATEGY_IDS,
+    get_strategy_color,
+    build_strategy_color_map,
+    inject_multiselect_colors,
 )
 
 __all__ = [
@@ -83,4 +97,18 @@ __all__ = [
     "performance_badge",
     "metric_value_class",
     "style_dataframe",
+    # KPI Components
+    "KPIMetric",
+    "render_kpi_row",
+    "render_kpi_grid",
+    "render_section_title",
+    "render_strategy_header_v2",
+    "get_value_class",
+    # Strategy Color Utilities
+    "STRATEGY_COLORS",
+    "BENCHMARK_COLORS",
+    "BENCHMARK_STRATEGY_IDS",
+    "get_strategy_color",
+    "build_strategy_color_map",
+    "inject_multiselect_colors",
 ]

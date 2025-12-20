@@ -7,7 +7,7 @@ Provides consistent theming, color-coded components, and professional UI element
 
 from __future__ import annotations
 
-from typing import Optional, Literal
+from typing import Dict, List, Optional, Literal
 import streamlit as st
 
 
@@ -38,6 +38,198 @@ COLORS = {
     "header_gradient_end": "#764ba2",
 }
 
+# =============================================================================
+# STRATEGY COLOR PALETTE - For consistent colors across charts and UI elements
+# =============================================================================
+
+# Primary strategy colors - vibrant, distinct colors for strategies
+STRATEGY_COLORS = [
+    "#2ecc71",  # Green (Emerald)
+    "#e74c3c",  # Red (Alizarin)
+    "#3498db",  # Blue (Peter River)
+    "#f39c12",  # Orange (Orange)
+    "#9b59b6",  # Purple (Amethyst)
+    "#1abc9c",  # Teal (Turquoise)
+    "#e67e22",  # Dark Orange (Carrot)
+    "#00cec9",  # Cyan (Robin Egg)
+    "#fd79a8",  # Pink (Pico)
+    "#a29bfe",  # Light Purple (Periwinkle)
+    "#ffeaa7",  # Yellow (Pale Gold)
+    "#74b9ff",  # Light Blue (Picton)
+    "#fab1a0",  # Salmon (Coral)
+    "#55efc4",  # Mint (Light Greenish)
+    "#636e72",  # Gray Blue (Gloomy)
+]
+
+# Benchmark colors - muted grays for visual distinction from strategies
+BENCHMARK_COLORS = [
+    "#95a5a6",  # Gray (Concrete) - NYSE EW
+    "#7f8c8d",  # Dark Gray (Asbestos) - NYSE MC
+    "#34495e",  # Navy Gray (Wet Asphalt) - NASDAQ EW
+    "#2c3e50",  # Dark Navy (Midnight Blue) - NASDAQ MC
+    "#566573",  # Blue Gray - SP500 EW
+    "#5d6d7e",  # Steel Blue - SP500 MC
+    "#717d7e",  # Pewter - NAS100 EW
+    "#626567",  # Charcoal - NAS100 MC
+]
+
+# Benchmark strategy IDs for identification
+BENCHMARK_STRATEGY_IDS = [
+    # Exchange-based benchmarks
+    "benchmark_nys_ew",
+    "benchmark_nys_mc",
+    "benchmark_nas_ew",
+    "benchmark_nas_mc",
+    # Index-based benchmarks (SP500, NAS100)
+    "benchmark_sp500_ew",
+    "benchmark_sp500_mc",
+    "benchmark_nas100_ew",
+    "benchmark_nas100_mc",
+]
+
+
+def get_strategy_color(
+    strategy_id: str,
+    strategy_index: int = 0,
+    all_strategies: Optional[List[str]] = None,
+) -> str:
+    """
+    Get a consistent color for a strategy.
+    
+    Uses deterministic assignment to ensure the same strategy always gets
+    the same color when displayed in the same context (e.g., charts + tags).
+    
+    Args:
+        strategy_id: The strategy identifier
+        strategy_index: Index position among non-benchmark strategies
+        all_strategies: Full list of strategies for deterministic ordering
+    
+    Returns:
+        Hex color string
+    """
+    # Benchmarks get gray tones
+    if strategy_id in BENCHMARK_STRATEGY_IDS:
+        bench_idx = BENCHMARK_STRATEGY_IDS.index(strategy_id)
+        return BENCHMARK_COLORS[bench_idx % len(BENCHMARK_COLORS)]
+    
+    # Regular strategies get vibrant colors
+    return STRATEGY_COLORS[strategy_index % len(STRATEGY_COLORS)]
+
+
+def build_strategy_color_map(
+    strategy_ids: List[str],
+) -> Dict[str, str]:
+    """
+    Build a consistent color mapping for a list of strategies.
+    
+    Separates strategies from benchmarks and assigns colors from the
+    appropriate palette. This ensures that charts and UI elements
+    (like multiselect tags) use matching colors.
+    
+    Args:
+        strategy_ids: List of strategy IDs to map
+    
+    Returns:
+        Dict mapping strategy_id -> hex color
+    """
+    color_map: Dict[str, str] = {}
+    
+    # Separate strategies and benchmarks
+    strategies = [s for s in strategy_ids if s not in BENCHMARK_STRATEGY_IDS]
+    benchmarks = [s for s in strategy_ids if s in BENCHMARK_STRATEGY_IDS]
+    
+    # Assign colors to strategies
+    for idx, sid in enumerate(strategies):
+        color_map[sid] = STRATEGY_COLORS[idx % len(STRATEGY_COLORS)]
+    
+    # Assign colors to benchmarks
+    for idx, sid in enumerate(benchmarks):
+        color_map[sid] = BENCHMARK_COLORS[idx % len(BENCHMARK_COLORS)]
+    
+    return color_map
+
+
+def inject_multiselect_colors(
+    color_map: Dict[str, str],
+    display_name_func: Optional[callable] = None,
+) -> None:
+    """
+    Inject CSS to color multiselect tags based on strategy colors.
+    
+    This creates CSS rules that target the multiselect tag elements
+    and applies the corresponding strategy colors.
+    
+    Args:
+        color_map: Dict mapping strategy_id -> hex color
+        display_name_func: Function to convert strategy_id to display name.
+                          If None, uses the raw strategy_id.
+    """
+    if not color_map:
+        return
+    
+    css_rules = []
+    
+    for strategy_id, color in color_map.items():
+        # Get display name for matching the tag text
+        display_name = strategy_id
+        if display_name_func:
+            try:
+                display_name = display_name_func(strategy_id)
+            except Exception:
+                pass
+        
+        # Create CSS rule targeting multiselect tags by their text content
+        # Streamlit multiselect tags have a specific structure we can target
+        # The tag text is in a span inside the tag element
+        css_rules.append(f"""
+        /* Strategy: {strategy_id} - {display_name} */
+        span[data-baseweb="tag"]:has(span[title="{display_name}"]) {{
+            background-color: {color} !important;
+            border-color: {color} !important;
+        }}
+        span[data-baseweb="tag"]:has(span[title="{display_name}"]) span {{
+            color: white !important;
+        }}
+        /* Also match truncated names */
+        span[data-baseweb="tag"]:has(span[title^="{display_name[:20]}"]) {{
+            background-color: {color} !important;
+            border-color: {color} !important;
+        }}
+        span[data-baseweb="tag"]:has(span[title^="{display_name[:20]}"]) span {{
+            color: white !important;
+        }}
+        """)
+    
+    # Combine all rules into a single style block
+    full_css = f"""
+    <style>
+    /* Strategy Comparison Multiselect Color Coding */
+    {chr(10).join(css_rules)}
+    
+    /* Improve tag visibility */
+    span[data-baseweb="tag"] {{
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease !important;
+    }}
+    
+    span[data-baseweb="tag"]:hover {{
+        filter: brightness(1.1) !important;
+        transform: scale(1.02) !important;
+    }}
+    
+    /* Remove button styling */
+    span[data-baseweb="tag"] svg {{
+        color: rgba(255, 255, 255, 0.8) !important;
+    }}
+    span[data-baseweb="tag"]:hover svg {{
+        color: white !important;
+    }}
+    </style>
+    """
+    
+    st.markdown(full_css, unsafe_allow_html=True)
+
 
 # =============================================================================
 # GLOBAL CSS INJECTION
@@ -45,26 +237,220 @@ COLORS = {
 
 DASHBOARD_CSS = """
 <style>
+/* =============================================================================
+   GLOBAL ENHANCEMENTS - Subtle polish for app-like feel
+   ============================================================================= */
+
+/* Smooth scrolling */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Improved spacing and padding throughout */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}
+
+/* Better data table styling */
+div[data-testid="stDataFrame"] {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #2d2d2d;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Enhanced chart containers */
+div[data-testid="stPlotlyChart"] {
+    border-radius: 8px;
+    padding: 0.5rem;
+    background: rgba(26, 26, 26, 0.5);
+    border: 1px solid #2d2d2d;
+    transition: all 0.2s ease;
+}
+
+div[data-testid="stPlotlyChart"]:hover {
+    border-color: #3a3a3a;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Improved metric display */
+[data-testid="stMetricValue"] {
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 0.875rem;
+    opacity: 0.85;
+    font-weight: 500;
+}
+
+/* Better button styling */
+button[kind="primary"] {
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+    transition: all 0.2s ease;
+}
+
+button[kind="primary"]:hover {
+    box-shadow: 0 4px 12px rgba(52, 152, 219, 0.4);
+    transform: translateY(-1px);
+}
+
+/* Enhanced expander styling */
+div[data-testid="stExpander"] {
+    border-radius: 8px;
+    border: 1px solid #2d2d2d;
+    background: rgba(26, 26, 26, 0.5);
+    transition: all 0.2s ease;
+}
+
+div[data-testid="stExpander"]:hover {
+    border-color: #3a3a3a;
+    background: rgba(30, 30, 30, 0.6);
+}
+
+/* Improved selectbox and input styling */
+div[data-testid="stSelectbox"] > div,
+div[data-testid="stNumberInput"] > div {
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+div[data-testid="stSelectbox"] > div:focus-within,
+div[data-testid="stNumberInput"] > div:focus-within {
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
+}
+
+/* Better divider styling */
+hr {
+    border: none;
+    border-top: 1px solid #2d2d2d;
+    margin: 1.5rem 0;
+}
+
+/* Enhanced caption styling */
+[data-testid="stCaption"] {
+    opacity: 0.75;
+    font-size: 0.875rem;
+    font-weight: 400;
+}
+
+/* =============================================================================
+   SIDEBAR ADMIN DOCK (fixed bottom strip)
+   ============================================================================= */
+
+/* Ensure sidebar content doesn't get hidden behind the fixed dock */
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+    padding-bottom: 3.75rem !important;
+    padding-top: 3.25rem !important;
+}
+
+/* Fixed dock container (compact pill in top-left corner) */
+section[data-testid="stSidebar"] .q23-admin-dock {
+    position: fixed;
+    left: 0.6rem;
+    top: 0.6rem;
+    width: fit-content;
+    z-index: 10000;
+    background: rgba(20, 20, 20, 0.95);
+    backdrop-filter: blur(12px);
+    border: 1px solid #2d2d2d;
+    border-radius: 14px;
+    padding: 0.25rem 0.3rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    transition: all 0.2s ease;
+}
+
+section[data-testid="stSidebar"] .q23-admin-dock:hover {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Dock inner layout */
+section[data-testid="stSidebar"] .q23-admin-dock .dock-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.25rem;
+}
+
+section[data-testid="stSidebar"] .q23-admin-dock a.dock-item {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.15rem;
+    height: 2.15rem;
+    padding: 0;
+    border-radius: 12px;
+    text-decoration: none;
+    color: #ecf0f1;
+    border: 1px solid transparent;
+    font-weight: 700;
+    font-size: 1.05rem;
+    transition: all 0.18s ease;
+}
+
+section[data-testid="stSidebar"] .q23-admin-dock a.dock-item:hover {
+    background: #1e1e1e;
+    border-color: #333;
+    transform: translateY(-1px);
+}
+
+section[data-testid="stSidebar"] .q23-admin-dock a.dock-item.active {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border-color: #0f3460;
+    color: #ffffff;
+}
+
+/* Hide labels in compact mode (icon-only) */
+section[data-testid="stSidebar"] .q23-admin-dock .dock-label {
+    display: none !important;
+}
+
+@media (max-width: 768px) {
+    section[data-testid="stSidebar"] .q23-admin-dock {
+        left: 0.5rem;
+        top: 0.5rem;
+    }
+}
+
 /* Factor Category Buttons */
 div[data-testid="stButton"] button {
     width: 100%;
     border-radius: 8px;
     font-weight: 600;
-    transition: all 0.3s ease;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid transparent;
 }
 
 div[data-testid="stButton"] button:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+div[data-testid="stButton"] button:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
 }
 
 /* Metric Cards */
 .metric-card {
-    background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+    background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%);
     border-radius: 12px;
     padding: 1.5rem;
-    border: 1px solid #333;
+    border: 1px solid #2d2d2d;
     margin-bottom: 1rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    transition: all 0.2s ease;
+}
+
+.metric-card:hover {
+    border-color: #3a3a3a;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transform: translateY(-1px);
 }
 
 .metric-card-header {
@@ -124,19 +510,27 @@ div[data-testid="stButton"] button:hover {
 .styled-table {
     border-collapse: collapse;
     width: 100%;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #2d2d2d;
 }
 
 .styled-table th {
-    background: #2d2d2d;
+    background: linear-gradient(135deg, #2d2d2d 0%, #252525 100%);
     color: #ecf0f1;
-    padding: 12px;
+    padding: 14px 16px;
     text-align: left;
     font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #3a3a3a;
 }
 
 .styled-table td {
-    padding: 10px 12px;
-    border-bottom: 1px solid #333;
+    padding: 12px 16px;
+    border-bottom: 1px solid #2d2d2d;
+    transition: background-color 0.15s ease;
 }
 
 .styled-table tr:nth-child(even) {
@@ -145,6 +539,11 @@ div[data-testid="stButton"] button:hover {
 
 .styled-table tr:hover {
     background: #2a2a2a;
+    cursor: pointer;
+}
+
+.styled-table tr:last-child td {
+    border-bottom: none;
 }
 
 /* Strategy Header */
@@ -396,8 +795,205 @@ def win_container_end() -> None:
 
 
 # =============================================================================
+# GRADIENT COLOR CONSTANTS
+# =============================================================================
+
+# Long positions: Green to black gradient
+LONG_GRADIENT_COLORS = [
+    "#2ecc71",  # Bright green (max weight)
+    "#27ae60",  # Dark green
+    "#1e8449",  # Darker green
+    "#145a32",  # Very dark green
+    "#000000",  # Black (min weight/null)
+]
+
+# Short positions: Red to black gradient
+SHORT_GRADIENT_COLORS = [
+    "#e74c3c",  # Bright red (max absolute weight)
+    "#c0392b",  # Dark red
+    "#a93226",  # Darker red
+    "#7b241c",  # Very dark red
+    "#000000",  # Black (min weight/null)
+]
+
+
+# =============================================================================
 # TABLE STYLING HELPERS
 # =============================================================================
+
+def _create_long_gradient_colormap() -> list:
+    """Create a custom colormap for long weights (green to black)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.pyplot as plt
+    
+    colors = LONG_GRADIENT_COLORS
+    n_bins = 256
+    cmap = LinearSegmentedColormap.from_list('long_gradient', colors, N=n_bins)
+    return cmap
+
+
+def _create_short_gradient_colormap() -> list:
+    """Create a custom colormap for short weights (red to black)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.pyplot as plt
+    
+    colors = SHORT_GRADIENT_COLORS
+    n_bins = 256
+    cmap = LinearSegmentedColormap.from_list('short_gradient', colors, N=n_bins)
+    return cmap
+
+
+def style_long_weights_gradient(
+    df, 
+    column: str = "weight",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> "pd.Styler":
+    """
+    Apply green-to-black gradient to long weights.
+    
+    Args:
+        df: DataFrame with weight column
+        column: Name of the weight column
+        vmin: Minimum value for normalization (defaults to df min)
+        vmax: Maximum value for normalization (defaults to df max)
+    
+    Returns:
+        Styled DataFrame
+    """
+    import pandas as pd
+    import numpy as np
+    
+    if df.empty or column not in df.columns:
+        return df.style
+    
+    # For long weights, use positive values only
+    weights = df[column]
+    positive_weights = weights[weights > 0]
+    
+    if vmin is None:
+        vmin = positive_weights.min() if not positive_weights.empty else 0.0
+    if vmax is None:
+        vmax = positive_weights.max() if not positive_weights.empty else 1.0
+    
+    # Normalize to 0-1 range
+    if vmax > vmin:
+        normalized = (weights - vmin) / (vmax - vmin)
+    else:
+        normalized = pd.Series([0.0] * len(weights), index=weights.index)
+    
+    # Create gradient function
+    def apply_long_gradient(val):
+        try:
+            weight = float(val)
+            if pd.isna(weight) or weight <= 0:
+                return 'background-color: #000000; color: #888888'
+            
+            # Normalize this specific weight value
+            norm_val = (weight - vmin) / (vmax - vmin) if vmax > vmin else 0.0
+            norm_val = max(0.0, min(1.0, norm_val))
+            
+            # Map to gradient (0 = black, 1 = bright green)
+            if norm_val < 0.25:
+                color = LONG_GRADIENT_COLORS[4]  # Black
+            elif norm_val < 0.5:
+                color = LONG_GRADIENT_COLORS[3]  # Very dark green
+            elif norm_val < 0.75:
+                color = LONG_GRADIENT_COLORS[2]  # Darker green
+            else:
+                color = LONG_GRADIENT_COLORS[1] if norm_val < 0.9 else LONG_GRADIENT_COLORS[0]  # Bright green
+            
+            # Determine text color (light for dark backgrounds, dark for light)
+            text_color = '#ecf0f1' if norm_val < 0.5 else '#000000'
+            
+            return f'background-color: {color}; color: {text_color}'
+        except (ValueError, TypeError):
+            return 'background-color: #000000; color: #888888'
+    
+    styled = df.style.map(
+        apply_long_gradient,
+        subset=[column]
+    ).format({column: "{:.2%}"})
+    
+    return styled
+
+
+def style_short_weights_gradient(
+    df,
+    column: str = "weight",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> "pd.Styler":
+    """
+    Apply red-to-black gradient to short weights (absolute values).
+    
+    Args:
+        df: DataFrame with weight column (should contain negative values)
+        column: Name of the weight column
+        vmin: Minimum absolute value for normalization (defaults to df min abs)
+        vmax: Maximum absolute value for normalization (defaults to df max abs)
+    
+    Returns:
+        Styled DataFrame
+    """
+    import pandas as pd
+    import numpy as np
+    
+    if df.empty or column not in df.columns:
+        return df.style
+    
+    # For short weights, use absolute values of negative weights
+    weights = df[column]
+    negative_weights = weights[weights < 0]
+    abs_negative = negative_weights.abs()
+    
+    if vmin is None:
+        vmin = abs_negative.min() if not abs_negative.empty else 0.0
+    if vmax is None:
+        vmax = abs_negative.max() if not abs_negative.empty else 1.0
+    
+    # Normalize to 0-1 range
+    if vmax > vmin:
+        normalized = (abs_negative - vmin) / (vmax - vmin)
+    else:
+        normalized = pd.Series([0.0] * len(abs_negative), index=abs_negative.index)
+    
+    # Create gradient function
+    def apply_short_gradient(val):
+        try:
+            weight = float(val)
+            if pd.isna(weight) or weight >= 0:
+                return 'background-color: #000000; color: #888888'
+            
+            # Use absolute value for normalization
+            abs_weight = abs(weight)
+            norm_val = (abs_weight - vmin) / (vmax - vmin) if vmax > vmin else 0.0
+            norm_val = max(0.0, min(1.0, norm_val))
+            
+            # Map to gradient (0 = black, 1 = bright red)
+            if norm_val < 0.25:
+                color = SHORT_GRADIENT_COLORS[4]  # Black
+            elif norm_val < 0.5:
+                color = SHORT_GRADIENT_COLORS[3]  # Very dark red
+            elif norm_val < 0.75:
+                color = SHORT_GRADIENT_COLORS[2]  # Darker red
+            else:
+                color = SHORT_GRADIENT_COLORS[1] if norm_val < 0.9 else SHORT_GRADIENT_COLORS[0]  # Bright red
+            
+            # Determine text color (light for dark backgrounds, dark for light)
+            text_color = '#ecf0f1' if norm_val < 0.5 else '#ffffff'
+            
+            return f'background-color: {color}; color: {text_color}'
+        except (ValueError, TypeError):
+            return 'background-color: #000000; color: #888888'
+    
+    styled = df.style.map(
+        apply_short_gradient,
+        subset=[column]
+    ).format({column: "{:.2%}"})
+    
+    return styled
+
 
 def style_dataframe(df, numeric_cols: Optional[list] = None):
     """
@@ -452,7 +1048,116 @@ def style_dataframe(df, numeric_cols: Optional[list] = None):
     if numeric_cols:
         for col in numeric_cols:
             if col in df.columns:
-                styled = styled.applymap(color_negative_red, subset=[col])
+                styled = styled.map(color_negative_red, subset=[col])
+    
+    return styled
+
+
+def style_weights_diverging_gradient(
+    df,
+    column: str = "weight",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> "pd.Styler":
+    """
+    Apply diverging gradient to weights: green (positive) -> black (zero) -> red (negative).
+    
+    Positive values fade from green to black as they approach zero.
+    Negative values fade from red to black as they approach zero.
+    Zero/null values are black.
+    
+    Args:
+        df: DataFrame with weight column (can contain both positive and negative values)
+        column: Name of the weight column
+        vmin: Minimum value for normalization (defaults to df min)
+        vmax: Maximum value for normalization (defaults to df max)
+    
+    Returns:
+        Styled DataFrame
+    """
+    import pandas as pd
+    import numpy as np
+    
+    if df.empty or column not in df.columns:
+        return df.style
+    
+    weights = df[column]
+    
+    # Determine normalization bounds
+    if vmin is None:
+        vmin = weights.min() if not weights.empty else -1.0
+    if vmax is None:
+        vmax = weights.max() if not weights.empty else 1.0
+    
+    # Ensure symmetric bounds for diverging scale
+    abs_max = max(abs(vmin), abs(vmax)) if (vmin < 0 and vmax > 0) else max(abs(vmin), abs(vmax))
+    if vmin < 0 and vmax > 0:
+        # Diverging: symmetric around zero
+        vmin_normalized = -abs_max
+        vmax_normalized = abs_max
+    else:
+        # One-sided: use actual bounds
+        vmin_normalized = vmin
+        vmax_normalized = vmax
+    
+    # Create gradient function
+    def apply_diverging_gradient(val):
+        try:
+            weight = float(val)
+            if pd.isna(weight):
+                return 'background-color: #000000; color: #888888'
+            
+            # Handle zero
+            if abs(weight) < 1e-10:
+                return 'background-color: #000000; color: #888888'
+            
+            # Normalize to 0-1 range for positive, 0-1 for negative (based on absolute value)
+            if vmax_normalized > vmin_normalized:
+                if weight > 0:
+                    # Positive: normalize to 0-1, where 1 = max, 0 = zero
+                    norm_val = weight / vmax_normalized if vmax_normalized > 0 else 0.0
+                    norm_val = max(0.0, min(1.0, norm_val))
+                else:
+                    # Negative: normalize to 0-1, where 1 = min (most negative), 0 = zero
+                    norm_val = abs(weight) / abs(vmin_normalized) if vmin_normalized < 0 else 0.0
+                    norm_val = max(0.0, min(1.0, norm_val))
+            else:
+                norm_val = 0.0
+            
+            # Map to gradient
+            if weight > 0:
+                # Long: green to black (norm_val 1 = bright green, 0 = black)
+                if norm_val < 0.25:
+                    color = LONG_GRADIENT_COLORS[4]  # Black
+                elif norm_val < 0.5:
+                    color = LONG_GRADIENT_COLORS[3]  # Very dark green
+                elif norm_val < 0.75:
+                    color = LONG_GRADIENT_COLORS[2]  # Darker green
+                else:
+                    color = LONG_GRADIENT_COLORS[1] if norm_val < 0.9 else LONG_GRADIENT_COLORS[0]  # Bright green
+                
+                text_color = '#ecf0f1' if norm_val < 0.5 else '#000000'
+            else:
+                # Short: red to black (norm_val 1 = bright red, 0 = black)
+                if norm_val < 0.25:
+                    color = SHORT_GRADIENT_COLORS[4]  # Black
+                elif norm_val < 0.5:
+                    color = SHORT_GRADIENT_COLORS[3]  # Very dark red
+                elif norm_val < 0.75:
+                    color = SHORT_GRADIENT_COLORS[2]  # Darker red
+                else:
+                    color = SHORT_GRADIENT_COLORS[1] if norm_val < 0.9 else SHORT_GRADIENT_COLORS[0]  # Bright red
+                
+                text_color = '#ecf0f1' if norm_val < 0.5 else '#ffffff'
+            
+            return f'background-color: {color}; color: {text_color}'
+        except (ValueError, TypeError):
+            return 'background-color: #000000; color: #888888'
+    
+    styled = df.style.map(
+        apply_diverging_gradient,
+        subset=[column]
+    ).format({column: "{:.2%}"})
     
     return styled
 
@@ -524,59 +1229,306 @@ def inject_live_strategy_css() -> None:
 # OVERVIEW PAGE SPECIFIC STYLES  
 # =============================================================================
 
-OVERVIEW_CSS = """
+OVERVIEW_PAGE_CSS = """
 <style>
-/* Primary KPI styling */
-.primary-kpi {
+/* Strategy Header */
+.strategy-header-container {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     border-radius: 16px;
-    padding: 1.5rem;
-    text-align: center;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
     border: 1px solid #0f3460;
 }
-
-.primary-kpi-value {
-    font-size: 2.5rem;
+.strategy-title {
+    font-size: 2rem;
     font-weight: 800;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.25rem;
 }
-
-.primary-kpi-label {
+.strategy-meta {
     color: #888;
-    font-size: 0.9rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    font-size: 0.95rem;
 }
-
-/* Metric group containers */
-.metric-group {
-    background: #1e1e1e;
-    border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 1rem;
+.strategy-meta code {
+    background: #2d2d2d;
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: #3498db;
 }
-
-.metric-group-title {
-    font-size: 1rem;
+.perf-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
     font-weight: 600;
-    color: #888;
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #333;
+    margin-left: 1rem;
+}
+.badge-excellent { background: #2ecc71; color: #000; }
+.badge-good { background: #3498db; color: #fff; }
+.badge-fair { background: #f39c12; color: #000; }
+.badge-poor { background: #e74c3c; color: #fff; }
+
+/* Section Headers */
+.section-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #ecf0f1;
+    margin: 2rem 0 1.25rem 0;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid #2d2d2d;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    letter-spacing: -0.01em;
+    position: relative;
 }
 
-/* Return coloring */
-.return-positive { color: #2ecc71 !important; }
-.return-negative { color: #e74c3c !important; }
+.section-title::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 60px;
+    height: 2px;
+    background: linear-gradient(90deg, #3498db, transparent);
+}
+.section-title .icon {
+    font-size: 1.2rem;
+}
 
-/* Sharpe coloring */
-.sharpe-excellent { color: #2ecc71 !important; }
-.sharpe-good { color: #3498db !important; }
-.sharpe-fair { color: #f39c12 !important; }
-.sharpe-poor { color: #e74c3c !important; }
+/* KPI Cards */
+.kpi-row {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.kpi-card {
+    background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    flex: 1;
+    border: 1px solid #333;
+    text-align: center;
+}
+.kpi-card.primary {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid #0f3460;
+    box-shadow: 0 4px 12px rgba(15, 52, 96, 0.2);
+}
+
+.kpi-card.primary:hover {
+    box-shadow: 0 6px 16px rgba(15, 52, 96, 0.3);
+    border-color: #1a4a7a;
+}
+.kpi-card.risk {
+    border-left: 3px solid #e74c3c;
+}
+.kpi-card.win {
+    border-left: 3px solid #2ecc71;
+}
+.kpi-label {
+    font-size: 0.75rem;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    opacity: 0.9;
+}
+.kpi-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+}
+.kpi-value.positive { color: #2ecc71; }
+.kpi-value.negative { color: #e74c3c; }
+.kpi-value.neutral { color: #ecf0f1; }
+.kpi-value.highlight { color: #3498db; }
+
+/* Metric Table */
+.metric-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+.metric-table th {
+    background: #2d2d2d;
+    color: #ecf0f1;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+.metric-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #333;
+    font-size: 0.9rem;
+}
+.metric-table tr:nth-child(even) { background: #1e1e1e; }
+.metric-table tr:hover { background: #2a2a2a; }
+.metric-table .value-positive { color: #2ecc71; font-weight: 600; }
+.metric-table .value-negative { color: #e74c3c; font-weight: 600; }
 </style>
 """
+
+# Legacy alias for backward compatibility
+OVERVIEW_CSS = OVERVIEW_PAGE_CSS
 
 
 def inject_overview_css() -> None:
     """Inject CSS specific to the Overview page."""
-    st.markdown(OVERVIEW_CSS, unsafe_allow_html=True)
+    st.markdown(OVERVIEW_PAGE_CSS, unsafe_allow_html=True)
+
+
+# =============================================================================
+# REUSABLE KPI CARD COMPONENTS
+# =============================================================================
+
+from typing import List, Tuple, Union
+from dataclasses import dataclass
+
+
+@dataclass
+class KPIMetric:
+    """A single KPI metric for rendering."""
+    label: str
+    value: Union[str, float]
+    value_class: str = "neutral"  # positive, negative, neutral, highlight
+    format_spec: str = ""  # e.g., ".2%", ".3f"
+    
+    def formatted_value(self) -> str:
+        """Return formatted value string."""
+        if isinstance(self.value, str):
+            return self.value
+        if self.format_spec:
+            return f"{self.value:{self.format_spec}}"
+        return str(self.value)
+
+
+def render_kpi_row(
+    metrics: List[KPIMetric],
+    card_class: str = "",
+) -> None:
+    """
+    Render a row of KPI cards.
+    
+    Args:
+        metrics: List of KPIMetric objects to render
+        card_class: Additional CSS class for cards (primary, risk, win)
+    """
+    cards_html = []
+    for m in metrics:
+        card_cls = f"kpi-card {card_class}".strip()
+        cards_html.append(f"""
+        <div class="{card_cls}">
+            <div class="kpi-label">{m.label}</div>
+            <div class="kpi-value {m.value_class}">{m.formatted_value()}</div>
+        </div>
+        """)
+    
+    html = f'<div class="kpi-row">{"".join(cards_html)}</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_section_title(title: str, icon: str = "") -> None:
+    """
+    Render a styled section title with optional icon.
+    
+    Args:
+        title: Section title text
+        icon: Optional emoji icon
+    """
+    icon_html = f'<span class="icon">{icon}</span>' if icon else ""
+    html = f'<div class="section-title">{icon_html} {title}</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_strategy_header_v2(
+    title: str,
+    strategy_name: str,
+    tag: str,
+    date_range: Tuple[str, str],
+    sharpe: float,
+) -> None:
+    """
+    Render the strategy header with performance badge.
+    
+    Args:
+        title: Main title
+        strategy_name: Strategy display name
+        tag: Run tag
+        date_range: (start, end) date tuple
+        sharpe: Sharpe ratio for badge
+    """
+    if sharpe >= 2.0:
+        badge_class, badge_text = "badge-excellent", "Excellent"
+    elif sharpe >= 1.0:
+        badge_class, badge_text = "badge-good", "Good"
+    elif sharpe >= 0.5:
+        badge_class, badge_text = "badge-fair", "Fair"
+    else:
+        badge_class, badge_text = "badge-poor", "Needs Work"
+    
+    html = f"""
+    <div class="strategy-header-container">
+        <div class="strategy-title">{title}</div>
+        <div class="strategy-meta">
+            <strong>{strategy_name}</strong> &nbsp;|&nbsp; 
+            Tag: <code>{tag}</code> &nbsp;|&nbsp; 
+            {date_range[0]} to {date_range[1]}
+            <span class="perf-badge {badge_class}">{badge_text}</span>
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def get_value_class(
+    value: float,
+    threshold: float = 0.0,
+    invert: bool = False,
+) -> str:
+    """
+    Get CSS class based on value relative to threshold.
+    
+    Args:
+        value: The value to evaluate
+        threshold: Comparison threshold
+        invert: If True, negative values are "positive" (e.g., for costs)
+    
+    Returns:
+        CSS class: "positive", "negative", or "neutral"
+    """
+    if invert:
+        if value < threshold:
+            return "positive"
+        elif value > threshold:
+            return "negative"
+    else:
+        if value > threshold:
+            return "positive"
+        elif value < threshold:
+            return "negative"
+    return "neutral"
+
+
+def render_kpi_grid(
+    rows: List[List[KPIMetric]],
+    card_classes: Optional[List[str]] = None,
+) -> None:
+    """
+    Render multiple rows of KPI cards.
+    
+    Args:
+        rows: List of rows, each row is a list of KPIMetric
+        card_classes: Optional list of card classes for each row
+    """
+    if card_classes is None:
+        card_classes = [""] * len(rows)
+    
+    for row, cls in zip(rows, card_classes):
+        render_kpi_row(row, card_class=cls)

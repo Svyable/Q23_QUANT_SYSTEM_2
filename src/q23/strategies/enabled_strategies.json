@@ -1,0 +1,23 @@
+{
+  "enabled": {
+    "ou_v1": true,
+    "glft_v1": true,
+    "q23_neural_alpha_v2": true,
+    "q23_composer_v2": true,
+    "nasnys_v4": true,
+    "qs23_hybrid_alpha": true,
+    "q23_composer_v1": true,
+    "q23_neural_alpha": true,
+    "gtp51max": true,
+    "benchmark_nys_ew": false,
+    "benchmark_nys_mc": false,
+    "benchmark_nas_ew": false,
+    "benchmark_nas_mc": false,
+    "benchmark_sp500_ew": false,
+    "benchmark_sp500_mc": false,
+    "benchmark_nas100_ew": false,
+    "benchmark_nas100_mc": false
+  },
+  "default_on_startup": "q23_neural_alpha_v2",
+  "last_updated": "2025-12-19T00:00:00"
+}

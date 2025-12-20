@@ -36,6 +36,12 @@ except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
 from q23.shared.config import cfg
+from q23.strategy.data_cache import (
+    load_cached_data,
+    save_to_cache,
+    is_cache_valid,
+    cleanup_old_cache,
+)
 
 
 def _require_xr() -> None:
@@ -111,6 +117,63 @@ def _normalize_to_dataset(obj: Any) -> "xr.Dataset":
 # Quantiacs OHLCV loader
 # -----------------------------------------------------------------------------
 
+def _is_valid_dataset(ds: "xr.Dataset") -> bool:
+    """Check if a dataset has the required structure for market data."""
+    _require_xr()
+    
+    # Must have time and asset dimensions
+    if "time" not in ds.dims or "asset" not in ds.dims:
+        return False
+    
+    # Must have at least some data
+    if ds.sizes.get("time", 0) == 0 or ds.sizes.get("asset", 0) == 0:
+        return False
+    
+    # Must have close price at minimum
+    if "close" not in ds.variables:
+        return False
+    
+    return True
+
+
+def _filter_cached_dataset(
+    ds: "xr.Dataset",
+    min_date: Optional[str],
+    max_date: Optional[str],
+    assets: Optional[Sequence[str]],
+) -> Optional["xr.Dataset"]:
+    """Filter a cached dataset by date range and assets.
+    
+    Returns None if the dataset is invalid or empty after filtering.
+    """
+    _require_xr()
+    
+    # Validate input dataset
+    if not _is_valid_dataset(ds):
+        return None
+    
+    try:
+        # Apply date filters
+        if min_date and "time" in ds.dims:
+            ds = ds.sel(time=slice(min_date, None))
+        if max_date and "time" in ds.dims:
+            ds = ds.sel(time=slice(None, max_date))
+        
+        # Apply asset filter
+        if assets is not None and "asset" in ds.dims:
+            valid_assets = [a for a in assets if a in set(ds.asset.values)]
+            if valid_assets:
+                ds = ds.sel(asset=valid_assets)
+        
+        # Validate result
+        if not _is_valid_dataset(ds):
+            return None
+        
+        return ds
+    except Exception:
+        return None
+
+
 def load_quantiacs_stocks(
     *,
     min_date: Optional[str] = None,
@@ -118,14 +181,47 @@ def load_quantiacs_stocks(
     assets: Optional[Sequence[str]] = None,
     fields: Optional[Sequence[str]] = None,
     forward_order: bool = True,
+    use_file_cache: bool = True,
 ) -> "xr.Dataset":
     """Load equity OHLCV (and is_liquid if available) from Quantiacs.
+
+    Uses two-level caching:
+    1. File cache: Daily .nc files in .cache/data/YYYYMMDD/ (persists across sessions)
+    2. In-memory: Via caller (load_market_data uses MarketDataBundle caching)
 
     Robustness:
     - Tries multiple qnt loader entry points (load_spx_data, stocks.load_data, qnt.data.load_data)
     - Retries with reduced field sets if qnt rejects a requested field (common with 'is_liquid')
+    
+    Args:
+        min_date: Minimum date to load
+        max_date: Maximum date to load (optional)
+        assets: Specific asset IDs to load (optional)
+        fields: Specific fields to load (optional)
+        forward_order: Whether to sort by time ascending
+        use_file_cache: Whether to use file-based daily cache (default True)
+    
+    Returns:
+        xr.Dataset with OHLCV data
     """
     _require_xr()
+
+    min_date = min_date or cfg.strategy.MIN_DATE
+    
+    # Check file cache first (SPX is the main data source)
+    # We cache the full dataset without asset filtering for maximum reuse
+    cache_key = "SPX"
+    
+    if use_file_cache and is_cache_valid(cache_key):
+        cached_ds = load_cached_data(cache_key)
+        if cached_ds is not None:
+            # Apply filters to cached data
+            ds = _filter_cached_dataset(cached_ds, min_date, max_date, assets)
+            if ds is not None:
+                # Ensure canonical dims order
+                ds = ds.transpose("time", "asset", missing_dims="ignore")
+                return ds
+            # If ds is None, cache was invalid - continue to API load
 
     try:
         import qnt.data as qndata  # type: ignore
@@ -133,8 +229,6 @@ def load_quantiacs_stocks(
         raise ImportError(
             "Quantiacs qnt package not found. Activate your qntdev conda env."
         ) from e
-
-    min_date = min_date or cfg.strategy.MIN_DATE
 
     # Field candidates: try richest first, then fall back.
     base_fields = list(fields) if fields is not None else [
@@ -182,6 +276,13 @@ def load_quantiacs_stocks(
                 # Canonical dims order
                 ds = ds.transpose("time", "asset", missing_dims="ignore")
 
+                # Save to file cache (full dataset for maximum reuse)
+                # Only cache if we have valid data
+                if use_file_cache and "close" in ds.variables:
+                    save_to_cache(cache_key, ds)
+                    # Clean up old cache files (keep last 3 days)
+                    cleanup_old_cache(keep_days=3)
+
                 # Require at least close/vol; other fields validated later.
                 return ds
             except KeyError as e:
@@ -210,6 +311,11 @@ def load_quantiacs_stocks(
 # Universe selection (SPX list + exchange filter)
 # -----------------------------------------------------------------------------
 
+# Simple memoization cache for SPX list loads (keyed by min_date)
+# This avoids redundant Quantiacs API calls when loading the same universe multiple times
+_spx_list_cache: Dict[str, Optional[pd.DataFrame]] = {}
+
+
 def _load_spx_universe_ids(
     *,
     min_date: str,
@@ -217,6 +323,9 @@ def _load_spx_universe_ids(
     pinned: Optional[Sequence[str]],
 ) -> Optional[List[str]]:
     """Best-effort universe selection using qnt.data.stocks.load_spx_list.
+    
+    OPTIMIZED: Uses memoization to cache SPX list loads by min_date,
+    avoiding redundant Quantiacs API calls when the same date is requested.
 
     Returns list of asset ids or None if unavailable.
     """
@@ -230,12 +339,20 @@ def _load_spx_universe_ids(
     if not (hasattr(qndata, "stocks") and hasattr(qndata.stocks, "load_spx_list")):
         return None
 
-    try:
-        df = pd.DataFrame(qndata.stocks.load_spx_list(min_date=min_date))
-    except Exception:
-        return None
+    # Check cache first
+    if min_date in _spx_list_cache:
+        df = _spx_list_cache[min_date]
+    else:
+        # Load from Quantiacs
+        try:
+            df = pd.DataFrame(qndata.stocks.load_spx_list(min_date=min_date))
+            # Cache the result (even if empty, to avoid retrying)
+            _spx_list_cache[min_date] = df
+        except Exception:
+            _spx_list_cache[min_date] = None
+            return None
 
-    if df.empty or "id" not in df.columns:
+    if df is None or df.empty or "id" not in df.columns:
         return None
 
     ids = df["id"].dropna().astype(str).unique().tolist()

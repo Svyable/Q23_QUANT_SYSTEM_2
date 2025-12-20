@@ -116,6 +116,14 @@ class ICWeightingParams:
     use_positive_only: bool = True
 
 
+@dataclass
+class CorrICWeightingParams(ICWeightingParams):
+    """IC weighting with correlation-aware diversification penalty."""
+
+    corr_penalty_strength: float = 0.30  # 0=no penalty, 1=full penalty
+    min_diversification: float = 0.20    # floor to prevent zeroing factors
+
+
 class DynamicICWeighting:
     """Compute IC series and factor weights, and provide composite score."""
 
@@ -179,3 +187,67 @@ class DynamicICWeighting:
     def artifacts(self) -> Tuple["xr.DataArray", "xr.DataArray", "xr.DataArray"]:
         """Return (ic_raw, ic_smooth, weights) for saving/debugging."""
         return self.ic_raw(), self.ic_smooth(), self.weights()
+
+
+class CorrelationAwareICWeighting(DynamicICWeighting):
+    """
+    Dynamic IC weighting with correlation-aware diversification.
+
+    Penalizes factors that are highly correlated with others to
+    avoid overweighting redundant signals and improve Sharpe.
+    """
+
+    def __init__(
+        self,
+        F: "xr.DataArray",
+        fwd_returns: "xr.DataArray",
+        *,
+        params: Optional[CorrICWeightingParams] = None,
+        asset_dim: str = "asset",
+    ):
+        super().__init__(F, fwd_returns, params=params or CorrICWeightingParams(), asset_dim=asset_dim)
+
+    def _correlation_penalty(self) -> "xr.DataArray":
+        """Per-factor penalty in [min_diversification, 1]."""
+        _require_xr()
+        p: CorrICWeightingParams = self.params  # type: ignore[assignment]
+
+        def _penalty(arr: np.ndarray) -> np.ndarray:
+            # arr shape: (factor, asset)
+            if arr.shape[1] < 2:
+                return np.ones(arr.shape[0], dtype=float)
+            corr = np.corrcoef(arr)
+            np.fill_diagonal(corr, 0.0)
+            penalty = 1.0 - np.nanmean(np.abs(corr), axis=1)
+            return np.nan_to_num(penalty, nan=1.0, posinf=1.0, neginf=0.0)
+
+        pen = xr.apply_ufunc(
+            _penalty,
+            self.F.transpose("time", "factor", self.asset_dim),
+            input_core_dims=[["factor", self.asset_dim]],
+            output_core_dims=[["factor"]],
+            vectorize=True,
+            dask="forbidden",
+            output_dtypes=[float],
+        )
+
+        pen = pen.transpose("time", "factor")
+        return pen.clip(min=float(p.min_diversification)).fillna(1.0)
+
+    def weights(self) -> "xr.DataArray":
+        if self._w is None:
+            p: CorrICWeightingParams = self.params  # type: ignore[assignment]
+            ic = self.ic_smooth()
+            base_w = normalize_positive_weights(ic, eps=float(p.eps))
+
+            penalty = self._correlation_penalty()
+            base_w, penalty = xr.align(base_w, penalty, join="inner")
+
+            # Blend: 1 - strength * (1 - penalty)
+            blend = 1.0 - float(p.corr_penalty_strength) * (1.0 - penalty)
+            blended = (base_w * blend).clip(min=0.0)
+
+            s = blended.sum("factor") + float(p.eps)
+            self._w = (blended / s).fillna(0.0)
+            self._w.name = "factor_weights"
+        return self._w

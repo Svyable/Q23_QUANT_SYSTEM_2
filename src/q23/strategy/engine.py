@@ -27,13 +27,14 @@ try:
 except Exception:  # pragma: no cover
     xr = None  # type: ignore
 
-from q23.shared.config import cfg, PortfolioMode
+from q23.shared.config import cfg, PortfolioMode, TransactionCostConfig, TransactionCostScheme
 from q23.strategy.factors import V4_24_FACTORS
 from q23.strategy.data_loader import MarketDataBundle, load_market_data
 from q23.strategy.factors import FactorLibrary, FactorParams
 from q23.strategy.ic_weighting import DynamicICWeighting, ICWeightingParams
 from q23.strategy.portfolio import PortfolioConstructor, PortfolioParams
 from q23.strategy.outputs import OutputWriter
+from q23.strategy.transaction_costs import TransactionCostModel, compute_atr_pandas
 
 
 def _require_xr() -> None:
@@ -72,7 +73,21 @@ def _compute_portfolio_diag(
     final_weights: "xr.DataArray",   # time x asset
     returns: "xr.DataArray",         # time x asset
     tc_bps: float = 10.0,
+    tc_config: Optional[TransactionCostConfig] = None,
+    ohlc: Optional[Dict[str, "xr.DataArray"]] = None,
 ) -> pd.DataFrame:
+    """Compute portfolio diagnostics including transaction costs.
+    
+    Args:
+        final_weights: Portfolio weights (time x asset)
+        returns: Asset returns (time x asset)
+        tc_bps: Legacy flat basis points (used if tc_config is None)
+        tc_config: Transaction cost configuration (overrides tc_bps)
+        ohlc: Dict with 'open', 'high', 'low', 'close' DataArrays for ATR-based TC
+        
+    Returns:
+        DataFrame with portfolio diagnostics including TC-adjusted returns
+    """
     _require_xr()
     w_df = final_weights.transpose("time", "asset").to_pandas()
     r_df = returns.transpose("time", "asset").to_pandas()
@@ -101,9 +116,59 @@ def _compute_portfolio_diag(
     herf = (w_df ** 2).sum(axis=1)
 
     turnover = _turnover_from_weights(w_df)
-    tc_rate = float(tc_bps) / 10000.0
-    port_ret_net_tc = port_ret - turnover * tc_rate
-    active_ret_net_tc = active_ret - turnover * tc_rate
+    weights_delta = w_df.diff().fillna(0.0)
+    
+    # Compute transaction costs using the new model
+    if tc_config is None:
+        # Legacy flat BPS mode
+        tc_rate = float(tc_bps) / 10000.0
+        tc_cost = turnover * tc_rate
+        tc_cost_atr = tc_cost.copy()  # Same as flat for backward compat
+    else:
+        tc_model = TransactionCostModel(tc_config)
+        
+        # Prepare OHLC DataFrames if available (for ATR-based TC)
+        close_df = None
+        high_df = None
+        low_df = None
+        atr_df = None
+        
+        if ohlc is not None:
+            try:
+                close_df = ohlc["close"].transpose("time", "asset").to_pandas()
+                high_df = ohlc["high"].transpose("time", "asset").to_pandas()
+                low_df = ohlc["low"].transpose("time", "asset").to_pandas()
+                
+                # Align OHLC with weights
+                close_df = close_df.reindex(index=idx, columns=cols).fillna(method="ffill").fillna(1.0)
+                high_df = high_df.reindex(index=idx, columns=cols).fillna(method="ffill").fillna(1.0)
+                low_df = low_df.reindex(index=idx, columns=cols).fillna(method="ffill").fillna(1.0)
+                
+                # Pre-compute ATR
+                atr_df = compute_atr_pandas(high_df, low_df, close_df, tc_config.atr_window)
+            except Exception:
+                # Fall back to flat BPS if OHLC fails
+                pass
+        
+        # Compute TC based on scheme
+        if tc_config.scheme == TransactionCostScheme.QUANTIACS_ATR and close_df is not None:
+            tc_costs_per_asset = tc_model.compute_costs(
+                weights_delta, close=close_df, atr=atr_df, high=high_df, low=low_df
+            )
+            tc_cost_atr = tc_costs_per_asset.sum(axis=1).reindex(idx).fillna(0.0)
+        else:
+            # Non-ATR schemes or fallback
+            tc_costs_per_asset = tc_model.compute_costs(weights_delta)
+            tc_cost_atr = tc_costs_per_asset.sum(axis=1).reindex(idx).fillna(0.0)
+        
+        # Also compute flat BPS for comparison
+        tc_rate = float(tc_config.flat_bps) / 10000.0
+        tc_cost = turnover * tc_rate
+    
+    port_ret_net_tc = port_ret - tc_cost
+    port_ret_net_atr_tc = port_ret - tc_cost_atr
+    active_ret_net_tc = active_ret - tc_cost
+    active_ret_net_atr_tc = active_ret - tc_cost_atr
 
     # EWMA vol (annualized)
     lam = 0.95
@@ -124,8 +189,12 @@ def _compute_portfolio_diag(
             "n_positions": npos,
             "herfindahl": herf,
             "turnover": turnover.reindex(idx).fillna(0.0),
+            "tc_cost_flat": tc_cost.reindex(idx).fillna(0.0),
+            "tc_cost_atr": tc_cost_atr.reindex(idx).fillna(0.0),
             "port_ret_net_tc": port_ret_net_tc,
+            "port_ret_net_atr_tc": port_ret_net_atr_tc,
             "active_ret_net_tc": active_ret_net_tc,
+            "active_ret_net_atr_tc": active_ret_net_atr_tc,
             "rolling_vol": vol,
         },
         index=idx,
@@ -160,7 +229,7 @@ def _compute_factor_vectors_snapshot(
 ) -> pd.DataFrame:
     """
     Per-asset table used by the PM dashboard:
-    - factor exposures (snapshot at last date)
+    - factor exposures (snapshot at last date) - these are z-scores, will be rounded to 4 decimals
     - summary cols: mean_score, score_vol, days_held, avg_weight, avg_weight_when_held, pnl_per_day_held, total_pnl_contrib
     """
     _require_xr()
@@ -188,10 +257,10 @@ def _compute_factor_vectors_snapshot(
     score_df = score_df.reindex(idx)[cols].fillna(0.0)
 
     held = (w_df.abs() > 1e-12).astype(float)
-    days_held = held.sum(axis=0)
+    days_held = held.sum(axis=0).astype(int)  # Integer type for days
 
     avg_weight = w_df.mean(axis=0)
-    avg_weight_when_held = (w_df.abs().where(held > 0).sum(axis=0) / (days_held.replace(0.0, np.nan))).fillna(0.0)
+    avg_weight_when_held = (w_df.abs().where(held > 0).sum(axis=0) / (days_held.replace(0, np.nan))).fillna(0.0)
 
     mean_score = score_df.mean(axis=0)
     score_vol = score_df.std(axis=0, ddof=0)
@@ -199,7 +268,7 @@ def _compute_factor_vectors_snapshot(
     w_lag = w_df.shift(1).fillna(0.0)
     contrib = (w_lag * r_df).fillna(0.0)
     total_pnl_contrib = contrib.sum(axis=0)
-    pnl_per_day_held = (total_pnl_contrib / (days_held.replace(0.0, np.nan))).fillna(0.0)
+    pnl_per_day_held = (total_pnl_contrib / (days_held.replace(0, np.nan))).fillna(0.0)
 
     # Build table
     out = expo.copy()
@@ -208,12 +277,13 @@ def _compute_factor_vectors_snapshot(
     out["pnl_per_day_held"] = pnl_per_day_held.reindex(out.index).fillna(0.0)
     out["mean_score"] = mean_score.reindex(out.index).fillna(0.0)
     out["score_vol"] = score_vol.reindex(out.index).fillna(0.0)
-    out["days_held"] = days_held.reindex(out.index).fillna(0.0)
+    out["days_held"] = days_held.reindex(out.index).fillna(0).astype(int)  # Ensure integer
     out["avg_weight"] = avg_weight.reindex(out.index).fillna(0.0)
     out["avg_weight_when_held"] = avg_weight_when_held.reindex(out.index).fillna(0.0)
 
-    # Clean
+    # Replace inf/NaN (rounding will happen in write_factor_vectors)
     out = out.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    
     return out
 
 
@@ -329,8 +399,25 @@ class StrategyEngine:
         self.output_writer.write_ic(ic_raw, ic_smooth, tag=tag)
 
         # Enhanced outputs (restore PM console richness)
-        tc_bps = float(getattr(cfg.strategy, "TC_BPS", 10.0)) if hasattr(cfg, "strategy") else 10.0
-        diag = _compute_portfolio_diag(final_weights=res.final_weights, returns=returns, tc_bps=tc_bps)
+        # Use new TC config (Quantiacs ATR by default)
+        tc_config = cfg.tc
+        tc_bps = tc_config.effective_bps  # For backward compatibility
+        
+        # Prepare OHLC data for ATR-based TC
+        ohlc_data = {
+            "open": ds["open"],
+            "high": ds["high"],
+            "low": ds["low"],
+            "close": ds["close"],
+        }
+        
+        diag = _compute_portfolio_diag(
+            final_weights=res.final_weights,
+            returns=returns,
+            tc_bps=tc_bps,
+            tc_config=tc_config,
+            ohlc=ohlc_data,
+        )
         self.output_writer.write_portfolio_diag(diag, tag=tag)
 
         exp_ts = _compute_factor_exposure_ts(F=F, final_weights=res.final_weights)
@@ -351,6 +438,7 @@ class StrategyEngine:
             "output_dir": cfg.paths.OUTPUT_ROOT,
             "factors": list(F.factor.values),
             "tc_bps": tc_bps,
+            "tc_config": tc_config.to_dict(),
             "artifacts": {
                 "wide_weights": str(self.output_writer.wide_weights_path(tag)),
                 "budget": str(self.output_writer.budget_path(tag)),
