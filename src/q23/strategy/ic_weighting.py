@@ -32,7 +32,7 @@ try:
 except Exception:  # pragma: no cover
     xr = None  # type: ignore
 
-from q23.shared.math_utils import ewma_1d
+from q23.shared.math_utils import ewma_1d, safe_corrcoef
 
 
 def _require_xr() -> None:
@@ -216,7 +216,8 @@ class CorrelationAwareICWeighting(DynamicICWeighting):
             # arr shape: (factor, asset)
             if arr.shape[1] < 2:
                 return np.ones(arr.shape[0], dtype=float)
-            corr = np.corrcoef(arr)
+            # Transpose to (asset, factor) for correlation matrix
+            corr = safe_corrcoef(arr.T)
             np.fill_diagonal(corr, 0.0)
             penalty = 1.0 - np.nanmean(np.abs(corr), axis=1)
             return np.nan_to_num(penalty, nan=1.0, posinf=1.0, neginf=0.0)

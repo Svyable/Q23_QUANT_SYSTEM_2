@@ -15,7 +15,7 @@ Conventions
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Union, Optional
 
 import numpy as np
 
@@ -220,6 +220,93 @@ def softmax_tilt(
         w[m] = w_sel / (ssum + eps)
 
     return w
+
+
+# =============================================================================
+# Safe correlation
+# =============================================================================
+
+def safe_corrcoef(x: np.ndarray, y: Optional[np.ndarray] = None, eps: float = 1e-12) -> Union[float, np.ndarray]:
+    """
+    Safe correlation coefficient that handles zero standard deviation.
+    
+    Args:
+        x: First array (1D or 2D)
+        y: Optional second array (1D). If None, computes correlation matrix of x
+        eps: Small value to avoid division by zero
+    
+    Returns:
+        If y is None and x is 2D: correlation matrix (n x n)
+        If y is provided: scalar correlation coefficient
+        If x is 1D and y is None: 1.0 (self-correlation)
+    """
+    x = np.asarray(x, dtype=float)
+    
+    # Handle 2D case (correlation matrix)
+    if y is None and x.ndim == 2:
+        # Check for constant columns (zero std)
+        stds = np.nanstd(x, axis=0, ddof=1)
+        valid = stds > eps
+        
+        if not np.any(valid):
+            # All columns are constant
+            n = x.shape[1]
+            return np.eye(n, dtype=float)
+        
+        # Only compute correlation for non-constant columns
+        x_valid = x[:, valid]
+        
+        if x_valid.shape[1] < 2:
+            return np.array([[1.0]], dtype=float)
+        
+        # Compute correlation with warnings suppressed
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr = np.corrcoef(x_valid, rowvar=False)
+            corr = np.nan_to_num(corr, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Expand back to full size with zeros for constant columns
+        if np.all(valid):
+            return corr
+        
+        full_corr = np.zeros((x.shape[1], x.shape[1]), dtype=float)
+        valid_idx = np.where(valid)[0]
+        for i, idx_i in enumerate(valid_idx):
+            for j, idx_j in enumerate(valid_idx):
+                full_corr[idx_i, idx_j] = corr[i, j]
+        # Set diagonal to 1.0
+        np.fill_diagonal(full_corr, 1.0)
+        return full_corr
+    
+    # Handle 1D case
+    if x.ndim == 1:
+        if y is None:
+            # Self-correlation
+            return 1.0
+        
+        y = np.asarray(y, dtype=float)
+        
+        if len(x) != len(y):
+            raise ValueError("x and y must have the same length")
+        
+        # Check for constant arrays
+        x_std = np.nanstd(x, ddof=1)
+        y_std = np.nanstd(y, ddof=1)
+        
+        if x_std < eps or y_std < eps:
+            # At least one is constant
+            if x_std < eps and y_std < eps:
+                # Both constant - check if same value
+                if np.abs(np.nanmean(x) - np.nanmean(y)) < eps:
+                    return 1.0
+                return 0.0
+            return 0.0
+        
+        # Both have variance - compute correlation
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr = np.corrcoef(x, y)[0, 1]
+            return float(np.nan_to_num(corr, nan=0.0, posinf=1.0, neginf=-1.0))
+    
+    raise ValueError(f"Unsupported input shape: x.shape={x.shape}, y={y}")
 
 
 # =============================================================================

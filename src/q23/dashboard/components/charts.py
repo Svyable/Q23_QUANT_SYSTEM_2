@@ -447,7 +447,9 @@ def create_scatter_with_regression(
     
     # Simple linear regression
     slope, intercept = np.polyfit(x_valid, y_valid, 1)
-    r_squared = np.corrcoef(x_valid, y_valid)[0, 1] ** 2
+    from q23.shared.math_utils import safe_corrcoef
+    corr = safe_corrcoef(x_valid, y_valid)
+    r_squared = corr ** 2 if isinstance(corr, (int, float)) else 0.0
     
     # Create figure
     fig = go.Figure()

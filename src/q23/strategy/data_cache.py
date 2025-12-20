@@ -18,7 +18,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 try:
     import xarray as xr  # type: ignore
@@ -111,6 +111,8 @@ def _validate_dataset(ds: "xr.Dataset") -> bool:
 def load_cached_data(index_type: str) -> Optional["xr.Dataset"]:
     """Load data from today's cache if exists and is valid.
     
+    Automatically tries different netCDF engines if the default fails.
+    
     Args:
         index_type: Index type ("SPX", "SP500", "NDX", "NAS100", etc.)
     
@@ -124,37 +126,90 @@ def load_cached_data(index_type: str) -> Optional["xr.Dataset"]:
     if not cache_path.exists():
         return None
     
-    try:
-        # Load the netCDF file
-        ds = xr.open_dataset(cache_path)
-        
-        # Load into memory and close file handle
-        ds = ds.load()
-        
-        # Validate the dataset structure
-        if not _validate_dataset(ds):
-            print(f"Warning: Invalid cache structure for {index_type}, will re-fetch")
-            # Remove invalid cache file
-            try:
-                cache_path.unlink()
-            except Exception:
-                pass
-            return None
-        
-        return ds
-    except Exception as e:
-        # If cache is corrupted, return None (will be re-fetched)
-        print(f"Warning: Failed to load cache for {index_type}: {e}")
+    # Try loading with different engines
+    engines_to_try = ["netcdf4", "h5netcdf", "scipy", None]  # None = auto-detect
+    
+    ds = None
+    last_error = None
+    
+    for engine in engines_to_try:
+        try:
+            if engine is None:
+                ds = xr.open_dataset(cache_path)
+            else:
+                ds = xr.open_dataset(cache_path, engine=engine)
+            
+            # Load into memory and close file handle
+            ds = ds.load()
+            break  # Success, exit loop
+        except ImportError:
+            # Engine not available, try next
+            continue
+        except Exception as e:
+            last_error = e
+            continue
+    
+    if ds is None:
+        # All engines failed
+        print(f"Warning: Failed to load cache for {index_type}: {last_error}")
         # Try to remove corrupted cache file
         try:
             cache_path.unlink()
         except Exception:
             pass
         return None
+    
+    # Validate the dataset structure
+    if not _validate_dataset(ds):
+        print(f"Warning: Invalid cache structure for {index_type}, will re-fetch")
+        # Remove invalid cache file
+        try:
+            cache_path.unlink()
+        except Exception:
+            pass
+        return None
+    
+    return ds
+
+
+def _get_available_netcdf_engine() -> Tuple[Optional[str], bool]:
+    """Detect which netCDF engine is available.
+    
+    Returns:
+        Tuple of (engine_name, supports_compression)
+        engine_name is None if no engine available
+    """
+    # Try netCDF4 first (best compression support)
+    try:
+        import netCDF4  # noqa: F401
+        return "netcdf4", True
+    except ImportError:
+        pass
+    
+    # Try h5netcdf second (good compression support)
+    try:
+        import h5netcdf  # noqa: F401
+        return "h5netcdf", True
+    except ImportError:
+        pass
+    
+    # Fall back to scipy (no compression support)
+    try:
+        import scipy  # noqa: F401
+        return "scipy", False
+    except ImportError:
+        pass
+    
+    return None, False
 
 
 def save_to_cache(index_type: str, data: "xr.Dataset") -> bool:
     """Save data to today's cache.
+    
+    Automatically selects the best available netCDF engine:
+    - netcdf4: Best (supports compression)
+    - h5netcdf: Good (supports compression)
+    - scipy: Basic (no compression, larger files)
     
     Args:
         index_type: Index type ("SPX", "SP500", "NDX", "NAS100", etc.)
@@ -165,24 +220,47 @@ def save_to_cache(index_type: str, data: "xr.Dataset") -> bool:
     """
     _require_xr()
     
+    # Validate data before saving
+    if not _validate_dataset(data):
+        print(f"Warning: Cannot cache invalid dataset for {index_type}")
+        return False
+    
     cache_path = get_cache_path(index_type)
     
     try:
         # Create cache directory if it doesn't exist
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save to netCDF format (efficient for xarray data)
-        # Use compression for smaller file size
-        encoding = {}
-        for var in data.data_vars:
-            encoding[var] = {"zlib": True, "complevel": 4}
+        # Detect available engine
+        engine, supports_compression = _get_available_netcdf_engine()
         
-        data.to_netcdf(cache_path, encoding=encoding)
+        if engine is None:
+            print(f"Warning: No netCDF engine available for caching {index_type}")
+            return False
+        
+        # Build encoding based on engine capabilities
+        encoding = {}
+        if supports_compression:
+            for var in data.data_vars:
+                encoding[var] = {"zlib": True, "complevel": 4}
+        
+        # Save with detected engine
+        if supports_compression:
+            data.to_netcdf(cache_path, engine=engine, encoding=encoding)
+        else:
+            # scipy doesn't support compression encoding
+            data.to_netcdf(cache_path, engine=engine)
         
         return True
     except Exception as e:
         print(f"Warning: Failed to save cache for {index_type}: {e}")
-        return False
+        # Try fallback without compression
+        try:
+            data.to_netcdf(cache_path)
+            return True
+        except Exception as e2:
+            print(f"Warning: Fallback save also failed for {index_type}: {e2}")
+            return False
 
 
 def cleanup_old_cache(keep_days: int = 3) -> int:
@@ -226,9 +304,12 @@ def get_cache_info() -> dict:
     """Get information about current cache state.
     
     Returns:
-        Dict with cache info (directories, sizes, etc.)
+        Dict with cache info (directories, sizes, engine, etc.)
     """
     cache_base = _get_cache_dir()
+    
+    # Get engine info
+    engine, supports_compression = _get_available_netcdf_engine()
     
     info = {
         "cache_dir": str(cache_base),
@@ -238,6 +319,8 @@ def get_cache_info() -> dict:
         "cached_indices": [],
         "total_size_mb": 0.0,
         "directories": [],
+        "netcdf_engine": engine or "none",
+        "compression_supported": supports_compression,
     }
     
     if not cache_base.exists():
@@ -306,3 +389,62 @@ def clear_all_cache() -> bool:
             return False
     
     return False
+
+
+def validate_and_repair_cache() -> dict:
+    """Validate all cache files and remove corrupted ones.
+    
+    Returns:
+        Dict with validation results:
+        - valid_files: List of valid cache files
+        - removed_files: List of removed corrupted files
+        - errors: List of error messages
+    """
+    _require_xr()
+    
+    cache_base = _get_cache_dir()
+    
+    result = {
+        "valid_files": [],
+        "removed_files": [],
+        "errors": [],
+    }
+    
+    if not cache_base.exists():
+        return result
+    
+    for date_dir in cache_base.iterdir():
+        if not date_dir.is_dir():
+            continue
+        
+        for cache_file in date_dir.glob("*.nc"):
+            try:
+                # Try to load and validate
+                ds = xr.open_dataset(cache_file)
+                ds = ds.load()
+                
+                if _validate_dataset(ds):
+                    result["valid_files"].append(str(cache_file))
+                else:
+                    # Invalid structure, remove
+                    try:
+                        cache_file.unlink()
+                        result["removed_files"].append(str(cache_file))
+                    except Exception as e:
+                        result["errors"].append(f"Failed to remove {cache_file}: {e}")
+            except Exception as e:
+                # Corrupted file, remove
+                try:
+                    cache_file.unlink()
+                    result["removed_files"].append(str(cache_file))
+                except Exception as e2:
+                    result["errors"].append(f"Failed to remove {cache_file}: {e2}")
+        
+        # Clean up empty date directories
+        try:
+            if date_dir.exists() and not any(date_dir.iterdir()):
+                date_dir.rmdir()
+        except Exception:
+            pass
+    
+    return result

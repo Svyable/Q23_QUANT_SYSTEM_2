@@ -49,7 +49,7 @@ try:
 except Exception:  # pragma: no cover
     xr = None  # type: ignore
 
-from q23.shared.math_utils import safe_zscore
+from q23.shared.math_utils import safe_zscore, safe_corrcoef
 
 
 def _require_xr() -> None:
@@ -479,7 +479,7 @@ def compute_mtf_ic_matrix(
             # Filter valid
             mask = np.isfinite(window_r) & np.isfinite(window_fwd)
             if mask.sum() > 10:
-                ic_series.iloc[i] = np.corrcoef(window_r[mask], window_fwd[mask])[0, 1]
+                ic_series.iloc[i] = safe_corrcoef(window_r[mask], window_fwd[mask])
         
         ic_da = xr.DataArray(
             ic_series.fillna(0.0).values,
