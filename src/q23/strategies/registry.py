@@ -120,6 +120,16 @@ class StrategyRegistry:
         except ImportError:
             pass
 
+        try:
+            from q23.strategies import glft_v2  # Enhanced GLFT Microstructure v2
+        except ImportError:
+            pass
+
+        try:
+            from q23.strategies import glft_v3  # Advanced GLFT Microstructure v3
+        except ImportError:
+            pass
+
     @classmethod
     def reset(cls) -> None:
         cls._strategies.clear()

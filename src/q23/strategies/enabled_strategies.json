@@ -1,5 +1,7 @@
 {
   "enabled": {
+    "glft_v3": true,
+    "glft_v2": true,
     "ou_v1": true,
     "glft_v1": true,
     "q23_neural_alpha_v2": true,

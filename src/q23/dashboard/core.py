@@ -22,6 +22,47 @@ except ImportError:
 TAG_RE = re.compile(r"_wide_weights_(.+?)\.csv$")
 
 
+def _parse_tag_datetime(tag: str) -> Optional[datetime]:
+    """Parse date from tag, handling multiple formats.
+    
+    Supported formats:
+    - YYYYMMDD_HHMMSS (e.g., 20251219_112716)
+    - YYYYMMDD (e.g., 20251219)
+    - YYYY-MM-DD_HHMMSS (e.g., 2025-12-19_112716)
+    - YYYY-MM-DD (e.g., 2025-12-19)
+    
+    Args:
+        tag: Tag string to parse
+        
+    Returns:
+        datetime if successfully parsed, None otherwise
+    """
+    if not tag:
+        return None
+    
+    formats = [
+        ("%Y%m%d_%H%M%S", 15),   # 20251219_112716
+        ("%Y%m%d", 8),           # 20251219
+        ("%Y-%m-%d_%H%M%S", 17), # 2025-12-19_112716
+        ("%Y-%m-%d", 10),        # 2025-12-19
+    ]
+    
+    for fmt, length in formats:
+        try:
+            parse_str = tag[:length] if len(tag) >= length else tag
+            return datetime.strptime(parse_str, fmt)
+        except (ValueError, IndexError):
+            continue
+    
+    # Fallback: try pandas as last resort
+    try:
+        return pd.to_datetime(tag).to_pydatetime()
+    except Exception:
+        pass
+    
+    return None
+
+
 def get_default_date_range() -> Dict[str, str]:
     today = datetime.now()
     current_year = today.year
@@ -182,10 +223,10 @@ def discover_strategy_tags(strategy_id: str) -> List[str]:
                         seen_tags.add(tag)
 
     def _key(t: str):
-        try:
-            return pd.to_datetime(t)
-        except Exception:
-            return pd.Timestamp.min
+        dt = _parse_tag_datetime(t)
+        if dt is not None:
+            return dt
+        return datetime.min
 
     return sorted(tags, key=_key, reverse=True)
 
@@ -214,10 +255,10 @@ def _discover_tags(base_dir: Path, base_name: str) -> List[str]:
             tags.append(m.group(1))
 
     def _key(t: str):
-        try:
-            return pd.to_datetime(t)
-        except Exception:
-            return pd.Timestamp.min
+        dt = _parse_tag_datetime(t)
+        if dt is not None:
+            return dt
+        return datetime.min
 
     tags_sorted = sorted(tags, key=_key, reverse=True)
     return tags_sorted
