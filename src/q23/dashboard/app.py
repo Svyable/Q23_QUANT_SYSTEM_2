@@ -51,6 +51,7 @@ from q23.dashboard._pages import (
     render_factors_page,
     render_attribution_page,
     render_diagnostics_page,
+    render_bias_page,
     render_whatif_page,
     render_blotter_page,
     render_rebalance_page,
@@ -169,6 +170,7 @@ PAGE_REGISTRY = {
     "Weights": lambda: render_weights_page(data),
     "Factors/IC": lambda: render_factors_page(data),
     "Attribution": lambda: render_attribution_page(data),
+    "Bias": lambda: render_bias_page(data),
     "Diagnostics": lambda: render_diagnostics_page(data),
     "What-If": lambda: render_whatif_page(data, sidebar_state.tag),
     "Live Strategy": lambda: render_live_strategy_page(

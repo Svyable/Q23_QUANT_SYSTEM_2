@@ -59,17 +59,29 @@ from q23.shared.config import cfg
 # =============================================================================
 
 BENCHMARK_OPTIONS = {
+    # Exchange-based benchmarks (all constituents on exchange)
     "benchmark_nys_ew": "NYSE Equal-Weight",
     "benchmark_nys_mc": "NYSE Market-Cap",
     "benchmark_nas_ew": "NASDAQ Equal-Weight",
     "benchmark_nas_mc": "NASDAQ Market-Cap",
+    # Index-based benchmarks (specific index constituents)
+    "benchmark_sp500_ew": "S&P 500 Equal-Weight",
+    "benchmark_sp500_mc": "S&P 500 Market-Cap",
+    "benchmark_nas100_ew": "NASDAQ-100 Equal-Weight",
+    "benchmark_nas100_mc": "NASDAQ-100 Market-Cap",
 }
 
 BENCHMARK_COLORS = {
-    "NYSE Equal-Weight": "#95a5a6",      # Gray
-    "NYSE Market-Cap": "#7f8c8d",        # Dark Gray
-    "NASDAQ Equal-Weight": "#9b59b6",    # Purple
-    "NASDAQ Market-Cap": "#8e44ad",      # Dark Purple
+    # Exchange-based (grays/purples)
+    "NYSE Equal-Weight": "#95a5a6",        # Gray
+    "NYSE Market-Cap": "#7f8c8d",          # Dark Gray
+    "NASDAQ Equal-Weight": "#9b59b6",      # Purple
+    "NASDAQ Market-Cap": "#8e44ad",        # Dark Purple
+    # Index-based (blues/teals)
+    "S&P 500 Equal-Weight": "#3498db",     # Blue
+    "S&P 500 Market-Cap": "#2980b9",       # Dark Blue
+    "NASDAQ-100 Equal-Weight": "#1abc9c",  # Teal
+    "NASDAQ-100 Market-Cap": "#16a085",    # Dark Teal
 }
 
 
@@ -437,9 +449,9 @@ def _render_performance_charts(
         if PLOTLY_AVAILABLE:
             use_interactive = st.checkbox(
                 "Use interactive charts",
-                value=False,
+                value=True,  # Default to True for better UX with hover tooltips
                 key="overview_interactive_charts",
-                help="Enable interactive Plotly charts with zoom/pan"
+                help="Enable interactive Plotly charts with zoom/pan and detailed hover tooltips"
             )
         else:
             use_interactive = False
@@ -448,13 +460,21 @@ def _render_performance_charts(
         
         with chart_left:
             if use_interactive:
-                _render_cumulative_return_chart_plotly(ret_series, benchmark_returns)
+                _render_cumulative_return_chart_plotly(
+                    ret_series, 
+                    benchmark_returns,
+                    diag=data.diag,
+                )
             else:
                 _render_cumulative_return_chart(ret_series, benchmark_returns)
         
         with chart_right:
             if use_interactive:
-                _render_drawdown_chart_plotly(ret_series, benchmark_returns)
+                _render_drawdown_chart_plotly(
+                    ret_series, 
+                    benchmark_returns,
+                    diag=data.diag,
+                )
             else:
                 _render_drawdown_chart(ret_series, benchmark_returns)
     else:
@@ -557,12 +577,20 @@ def _render_drawdown_chart(
 def _render_cumulative_return_chart_plotly(
     ret_series: pd.Series,
     benchmark_returns: Optional[Dict[str, pd.Series]] = None,
+    diag: Optional[pd.DataFrame] = None,
 ) -> None:
     """Render interactive cumulative return chart with Plotly and benchmark overlays.
+    
+    Features Quantiacs-style unified hover tooltip showing:
+    - Strategy PnL (green when positive, red when negative)
+    - Benchmark PnL (if selected)
+    - Underwater (drawdown)
+    - Long/Short/Net exposure
     
     Args:
         ret_series: Strategy return series
         benchmark_returns: Optional dict mapping benchmark names to return series
+        diag: Optional diagnostics DataFrame with exposure data
     """
     try:
         import plotly.graph_objects as go
@@ -572,34 +600,97 @@ def _render_cumulative_return_chart_plotly(
     
     cumret = (1.0 + ret_series).cumprod() - 1.0
     
+    # Compute drawdown for underwater display
+    eq = (1.0 + ret_series).cumprod()
+    underwater = eq / eq.cummax() - 1.0
+    
+    # Determine strategy color based on final return (green = positive, red = negative)
+    final_return = cumret.iloc[-1] if len(cumret) > 0 else 0
+    strategy_color = '#2ecc71' if final_return >= 0 else '#e74c3c'
+    strategy_fill = 'rgba(46, 204, 113, 0.2)' if final_return >= 0 else 'rgba(231, 76, 60, 0.2)'
+    
     fig = go.Figure()
     
-    # Add strategy line with area fill
+    # Add strategy line with area fill - dynamic green/red based on performance
     fig.add_trace(go.Scatter(
         x=cumret.index,
         y=cumret.values,
         mode='lines',
-        name='Strategy',
-        line={'color': '#3498db', 'width': 2},
+        name='PnL Strategy',
+        line={'color': strategy_color, 'width': 2.5},
         fill='tozeroy',
-        fillcolor='rgba(52, 152, 219, 0.2)',
-        hovertemplate='%{x}<br>Return: %{y:.2%}<extra></extra>',
+        fillcolor=strategy_fill,
+        hovertemplate='%{y:.2%}',
+        showlegend=False,  # Hide from legend, keep in tooltip
     ))
     
-    # Add benchmark overlays
+    # Add benchmark overlays (hidden from legend but visible in tooltip)
     if benchmark_returns:
-        for name, bench_ret in benchmark_returns.items():
+        bench_colors = ['#3498db', '#9b59b6', '#1abc9c', '#f39c12', '#95a5a6', '#e67e22']
+        for i, (name, bench_ret) in enumerate(benchmark_returns.items()):
             bench_cumret = (1.0 + bench_ret).cumprod() - 1.0
-            # Align to strategy dates
             bench_cumret = bench_cumret.reindex(cumret.index, method='ffill')
-            color = BENCHMARK_COLORS.get(name, '#95a5a6')
+            color = BENCHMARK_COLORS.get(name, bench_colors[i % len(bench_colors)])
             fig.add_trace(go.Scatter(
                 x=bench_cumret.index,
                 y=bench_cumret.values,
                 mode='lines',
-                name=name,
+                name=f'PnL {name}',
                 line={'color': color, 'width': 1.5, 'dash': 'dash'},
-                hovertemplate=f'{name}<br>Return: %{{y:.2%}}<extra></extra>',
+                hovertemplate='%{y:.2%}',
+                showlegend=False,
+            ))
+    
+    # Add underwater trace (drawdown) - visible line, shows in tooltip
+    fig.add_trace(go.Scatter(
+        x=underwater.index,
+        y=underwater.values,
+        mode='lines',
+        name='Underwater',
+        line={'color': '#95a5a6', 'width': 1, 'dash': 'dot'},
+        hovertemplate='%{y:.2%}',
+        showlegend=False,
+    ))
+    
+    # Add exposure traces if diag data is available
+    if diag is not None and not diag.empty:
+        diag_aligned = diag.reindex(cumret.index, method='ffill')
+        
+        if 'gross_exposure' in diag_aligned.columns and 'net_exposure' in diag_aligned.columns:
+            gross = diag_aligned['gross_exposure'].fillna(1.0)
+            net = diag_aligned['net_exposure'].fillna(1.0)
+            long_exp = (gross + net) / 2
+            short_exp = (gross - net) / 2
+            
+            # These are invisible lines - only appear in hover tooltip
+            fig.add_trace(go.Scatter(
+                x=long_exp.index,
+                y=long_exp.values,
+                mode='lines',
+                name='Long',
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},  # Invisible line
+                hovertemplate='%{y:.2f}',
+                showlegend=False,
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=short_exp.index,
+                y=short_exp.values,
+                mode='lines',
+                name='Short',
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},
+                hovertemplate='%{y:.2f}',
+                showlegend=False,
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=net.index,
+                y=net.values,
+                mode='lines',
+                name='Bias',
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},
+                hovertemplate='%{y:.2f}',
+                showlegend=False,
             ))
     
     # Add zero line
@@ -610,10 +701,9 @@ def _render_cumulative_return_chart_plotly(
         paper_bgcolor='#0E1117',
         plot_bgcolor='#262730',
         font={'color': '#ecf0f1'},
-        height=280,
+        height=320,
         margin={'l': 60, 'r': 20, 't': 40, 'b': 40},
-        showlegend=bool(benchmark_returns),
-        legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'left', 'x': 0},
+        showlegend=False,  # Hide legend entirely - tooltips still work
         xaxis={'gridcolor': '#3A3A3A', 'zerolinecolor': '#3A3A3A'},
         yaxis={
             'gridcolor': '#3A3A3A',
@@ -621,20 +711,30 @@ def _render_cumulative_return_chart_plotly(
             'tickformat': '.0%',
         },
         hovermode='x unified',
+        hoverlabel={
+            'bgcolor': '#1e1e1e',
+            'bordercolor': '#444',
+            'font': {'size': 12, 'color': '#ecf0f1'},
+        },
     )
     
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_drawdown_chart_plotly(
     ret_series: pd.Series,
     benchmark_returns: Optional[Dict[str, pd.Series]] = None,
+    diag: Optional[pd.DataFrame] = None,
 ) -> None:
     """Render interactive drawdown chart with Plotly and benchmark overlays.
+    
+    Clean chart with unified hover tooltip showing all metrics.
+    No legend clutter - tooltips show everything on hover.
     
     Args:
         ret_series: Strategy return series
         benchmark_returns: Optional dict mapping benchmark names to return series
+        diag: Optional diagnostics DataFrame with additional metrics
     """
     try:
         import plotly.graph_objects as go
@@ -647,33 +747,65 @@ def _render_drawdown_chart_plotly(
     
     fig = go.Figure()
     
-    # Add strategy drawdown with fill
+    # Add strategy drawdown with red fill (drawdown is always negative)
     fig.add_trace(go.Scatter(
         x=dd.index,
         y=dd.values,
         mode='lines',
-        name='Strategy',
-        line={'color': '#e74c3c', 'width': 1.5},
+        name='DD Strategy',
+        line={'color': '#e74c3c', 'width': 2},
         fill='tozeroy',
         fillcolor='rgba(231, 76, 60, 0.3)',
-        hovertemplate='%{x}<br>Drawdown: %{y:.2%}<extra></extra>',
+        hovertemplate='%{y:.2%}',
+        showlegend=False,
     ))
     
-    # Add benchmark drawdowns
+    # Add benchmark drawdowns (no legend, visible in tooltip)
     if benchmark_returns:
-        for name, bench_ret in benchmark_returns.items():
+        bench_colors = ['#3498db', '#9b59b6', '#1abc9c', '#f39c12', '#95a5a6', '#e67e22']
+        for i, (name, bench_ret) in enumerate(benchmark_returns.items()):
             bench_eq = (1.0 + bench_ret).cumprod()
             bench_dd = bench_eq / bench_eq.cummax() - 1.0
-            # Align to strategy dates
             bench_dd = bench_dd.reindex(dd.index, method='ffill')
-            color = BENCHMARK_COLORS.get(name, '#95a5a6')
+            color = BENCHMARK_COLORS.get(name, bench_colors[i % len(bench_colors)])
             fig.add_trace(go.Scatter(
                 x=bench_dd.index,
                 y=bench_dd.values,
                 mode='lines',
-                name=name,
-                line={'color': color, 'width': 1.5, 'dash': 'dash'},
-                hovertemplate=f'{name}<br>Drawdown: %{{y:.2%}}<extra></extra>',
+                name=f'DD {name}',
+                line={'color': color, 'width': 1.2, 'dash': 'dash'},
+                hovertemplate='%{y:.2%}',
+                showlegend=False,
+            ))
+    
+    # Add additional metrics from diag - invisible lines, only in tooltip
+    if diag is not None and not diag.empty:
+        diag_aligned = diag.reindex(dd.index, method='ffill')
+        
+        if 'n_positions' in diag_aligned.columns:
+            n_pos = diag_aligned['n_positions'].fillna(0)
+            fig.add_trace(go.Scatter(
+                x=n_pos.index,
+                y=n_pos.values,
+                mode='lines',
+                name='Positions',
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},  # Invisible
+                yaxis='y2',
+                hovertemplate='%{y:.0f}',
+                showlegend=False,
+            ))
+        
+        if 'turnover' in diag_aligned.columns:
+            turnover = diag_aligned['turnover'].fillna(0)
+            fig.add_trace(go.Scatter(
+                x=turnover.index,
+                y=turnover.values,
+                mode='lines',
+                name='Turnover',
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},
+                yaxis='y2',
+                hovertemplate='%{y:.1%}',
+                showlegend=False,
             ))
     
     # Add zero line
@@ -684,20 +816,30 @@ def _render_drawdown_chart_plotly(
         paper_bgcolor='#0E1117',
         plot_bgcolor='#262730',
         font={'color': '#ecf0f1'},
-        height=280,
+        height=320,
         margin={'l': 60, 'r': 20, 't': 40, 'b': 40},
-        showlegend=bool(benchmark_returns),
-        legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'left', 'x': 0},
+        showlegend=False,  # No legend - cleaner chart, tooltips still work
         xaxis={'gridcolor': '#3A3A3A', 'zerolinecolor': '#3A3A3A'},
         yaxis={
             'gridcolor': '#3A3A3A',
             'zerolinecolor': '#3A3A3A',
             'tickformat': '.0%',
         },
+        yaxis2={
+            'overlaying': 'y',
+            'side': 'right',
+            'showgrid': False,
+            'visible': False,  # Hide secondary axis
+        },
         hovermode='x unified',
+        hoverlabel={
+            'bgcolor': '#1e1e1e',
+            'bordercolor': '#444',
+            'font': {'size': 12, 'color': '#ecf0f1'},
+        },
     )
     
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_calendar_heatmap(ret_series: pd.Series) -> None:

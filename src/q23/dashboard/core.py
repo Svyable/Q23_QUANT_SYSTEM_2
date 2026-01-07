@@ -137,6 +137,37 @@ def discover_available_strategies(include_benchmarks: bool = False) -> List[str]
         return []
 
 
+def get_enabled_strategies() -> Dict[str, bool]:
+    """Load enabled strategies from enabled_strategies.json.
+    
+    Returns:
+        Dictionary mapping strategy_id -> enabled (bool)
+    """
+    config_path = _project_root() / "src" / "q23" / "strategies" / "enabled_strategies.json"
+    if config_path.exists():
+        try:
+            import json
+            data = json.loads(config_path.read_text())
+            return data.get("enabled", {})
+        except Exception:
+            pass
+    return {}
+
+
+def get_enabled_strategy_ids(include_benchmarks: bool = False) -> List[str]:
+    """Get list of enabled strategy IDs.
+    
+    Args:
+        include_benchmarks: If True, includes enabled benchmarks in the list.
+    
+    Returns:
+        List of enabled strategy IDs
+    """
+    all_strategies = discover_available_strategies(include_benchmarks=include_benchmarks)
+    enabled = get_enabled_strategies()
+    return [sid for sid in all_strategies if enabled.get(sid, False)]
+
+
 def get_available_benchmarks() -> List[str]:
     """Get list of available benchmark strategy IDs.
     
@@ -604,14 +635,66 @@ def artifacts_to_dashboard_data(
     )
 
 
+def _filter_dashboard_data_by_date_range(
+    data: DashboardData,
+    date_range: Tuple[str, str]
+) -> DashboardData:
+    """Filter dashboard data by date range.
+
+    Args:
+        data: DashboardData to filter
+        date_range: Tuple of (start_date, end_date) strings
+
+    Returns:
+        Filtered DashboardData
+    """
+    start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+
+    # Filter weights (time x asset DataFrame)
+    filtered_weights = None
+    if data.weights is not None and not data.weights.empty:
+        if isinstance(data.weights.index, pd.DatetimeIndex):
+            mask = (data.weights.index >= start_date) & (data.weights.index <= end_date)
+            filtered_weights = data.weights.loc[mask].copy() if mask.any() else None
+
+    # Filter diagnostics (time series data)
+    filtered_diag = None
+    if data.diag is not None and not data.diag.empty:
+        if isinstance(data.diag.index, pd.DatetimeIndex):
+            mask = (data.diag.index >= start_date) & (data.diag.index <= end_date)
+            filtered_diag = data.diag.loc[mask].copy() if mask.any() else None
+
+    # Filter exposure data
+    filtered_exposure = None
+    if data.exposure is not None and not data.exposure.empty:
+        if isinstance(data.exposure.index, pd.DatetimeIndex):
+            mask = (data.exposure.index >= start_date) & (data.exposure.index <= end_date)
+            filtered_exposure = data.exposure.loc[mask].copy() if mask.any() else None
+
+    # Return filtered data (keep other fields unchanged)
+    return DashboardData(
+        weights=filtered_weights,
+        budget=data.budget,  # Budget is usually static
+        factor_weights=data.factor_weights,  # Factor weights are usually static
+        ic=data.ic,  # IC data is usually static
+        meta=data.meta,
+        diag=filtered_diag,
+        exposure=filtered_exposure,
+        factor_vectors=data.factor_vectors,
+        tag=data.tag,
+        base_name=data.base_name,
+    )
+
+
 def load_strategy_dashboard_data(
     strategy_id: str,
     tag: str,
     date_range: Optional[Tuple[str, str]] = None,
 ) -> DashboardData:
     """Load dashboard data for a strategy.
-    
+
     Tries multiple locations and base names to handle legacy and new file layouts.
+    Applies date range filtering if specified.
     """
     strategy_dir = get_strategy_output_dir(strategy_id)
     root = _project_root()
@@ -676,29 +759,9 @@ def load_strategy_dashboard_data(
             base_name=strategy_id,
         )
 
-    if date_range is not None and data.weights is not None:
-        start_date, end_date = date_range
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-
-        mask = (data.weights.index >= start_dt) & (data.weights.index <= end_dt)
-        data.weights = data.weights.loc[mask].copy() if mask.any() else data.weights
-
-        if data.diag is not None and not data.diag.empty:
-            diag_mask = (data.diag.index >= start_dt) & (data.diag.index <= end_dt)
-            data.diag = data.diag.loc[diag_mask].copy() if diag_mask.any() else data.diag
-
-        if data.exposure is not None and not data.exposure.empty:
-            exp_mask = (data.exposure.index >= start_dt) & (data.exposure.index <= end_dt)
-            data.exposure = data.exposure.loc[exp_mask].copy() if exp_mask.any() else data.exposure
-
-        if data.factor_weights is not None and not data.factor_weights.empty:
-            fw_mask = (data.factor_weights.index >= start_dt) & (data.factor_weights.index <= end_dt)
-            data.factor_weights = data.factor_weights.loc[fw_mask].copy() if fw_mask.any() else data.factor_weights
-
-        if data.budget is not None and not data.budget.empty:
-            b_mask = (data.budget.index >= start_dt) & (data.budget.index <= end_dt)
-            data.budget = data.budget.loc[b_mask].copy() if b_mask.any() else data.budget
+    # Apply date range filtering if specified
+    if date_range is not None:
+        data = _filter_dashboard_data_by_date_range(data, date_range)
 
     return data
 

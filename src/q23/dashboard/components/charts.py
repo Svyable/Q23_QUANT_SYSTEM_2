@@ -70,18 +70,65 @@ SHORT_TREEMAP_COLORS = [
 ]
 
 
+def get_plotly_config(
+    responsive: bool = True,
+    display_mode_bar: bool = True,
+    remove_buttons: Optional[List[str]] = None,
+) -> dict:
+    """
+    Get optimized Plotly config for responsive display without scrollbars.
+    
+    Optimizations:
+    - Responsive sizing to fit container
+    - Removes unnecessary buttons
+    - Prevents scrollbars and cut-off issues
+    - Optimized for dark theme
+    
+    Args:
+        responsive: Enable responsive sizing
+        display_mode_bar: Show/hide modebar
+        remove_buttons: List of buttons to remove (e.g., ['lasso2d', 'select2d'])
+    
+    Returns:
+        Plotly config dictionary
+    """
+    if remove_buttons is None:
+        remove_buttons = ['lasso2d', 'select2d']
+    
+    return {
+        'displayModeBar': display_mode_bar,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': remove_buttons,
+        'responsive': responsive,
+        'autosizable': True,
+        'fillFrame': True,
+        'frameMargins': 0,
+        'scrollZoom': True,
+        'doubleClick': 'reset',
+    }
+
+
 def get_plotly_layout(
     title: str = "",
-    height: int = 400,
+    height: Optional[int] = None,
     show_legend: bool = True,
 ) -> dict:
-    """Get consistent Plotly layout for dark theme."""
-    return {
+    """Get consistent Plotly layout for dark theme.
+    
+    Args:
+        title: Chart title
+        height: Optional fixed height. If None, chart will be fully responsive with autosize=True
+        show_legend: Whether to show legend
+    
+    Returns:
+        Dictionary of layout parameters for Plotly figure
+    """
+    layout = {
         "title": {"text": title, "font": {"size": 16, "color": PM_COLORS["text"]}},
         "paper_bgcolor": PM_COLORS["background"],
         "plot_bgcolor": PM_COLORS["card"],
         "font": {"color": PM_COLORS["text"], "size": 11},
-        "height": height,
+        "autosize": True,
         "showlegend": show_legend,
         "legend": {
             "bgcolor": "rgba(0,0,0,0.5)",
@@ -99,6 +146,12 @@ def get_plotly_layout(
         "hovermode": "x unified",
         "margin": {"l": 60, "r": 40, "t": 60, "b": 40},
     }
+    
+    # Only set height if explicitly provided (for fixed-size charts)
+    if height is not None:
+        layout["height"] = height
+    
+    return layout
 
 
 def create_risk_gauge(
@@ -107,6 +160,7 @@ def create_risk_gauge(
     min_val: float = 0,
     max_val: float = 0.5,
     thresholds: Optional[List[float]] = None,
+    height: int = 250,
 ) -> "go.Figure":
     """Create a gauge chart for risk metrics."""
     if not PLOTLY_AVAILABLE:
@@ -147,12 +201,9 @@ def create_risk_gauge(
         },
     ))
     
-    fig.update_layout(
-        paper_bgcolor=PM_COLORS["background"],
-        font={"color": PM_COLORS["text"]},
-        height=250,
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
-    )
+    layout = get_plotly_layout(title="", height=height)
+    layout["margin"] = {"l": 20, "r": 20, "t": 50, "b": 20}
+    fig.update_layout(**layout)
     
     return fig
 
@@ -205,8 +256,24 @@ def create_treemap_chart(
     values: pd.Series,
     title: str = "Portfolio Composition",
     color_by_value: bool = True,
+    stock_metrics: Optional[Dict[str, Dict]] = None,
+    height: int = 450,
 ) -> "go.Figure":
-    """Create a treemap for portfolio/sector visualization."""
+    """
+    Create a treemap for portfolio/sector visualization with enhanced tooltips.
+    
+    Args:
+        values: Series of portfolio weights by stock
+        title: Chart title
+        color_by_value: Color by long/short direction
+        stock_metrics: Optional dict of {symbol: metrics_dict} for enhanced tooltips
+                      Each metrics_dict can contain: sharpe, sortino, var_95, max_dd,
+                      skewness, days_held, ret_30d, pnl_contrib, beta, etc.
+        height: Chart height
+    
+    Returns:
+        Plotly figure
+    """
     if not PLOTLY_AVAILABLE:
         return None
     
@@ -272,6 +339,75 @@ def create_treemap_chart(
         colors = abs_values.values
         colorscale = PM_COLORSCALE
     
+    # Build enhanced hover text if metrics provided
+    if stock_metrics:
+        hover_texts = []
+        for symbol in values.index:
+            weight = values[symbol]
+            metrics = stock_metrics.get(symbol, {})
+            
+            # Build rich tooltip
+            lines = [
+                f"<b>{symbol}</b>",
+                f"<b>Weight:</b> {weight:+.2%}",
+                "─" * 20,
+            ]
+            
+            # Performance section
+            if metrics.get('sharpe') is not None:
+                lines.append(f"<b>Sharpe:</b> {metrics['sharpe']:.2f}")
+            if metrics.get('sortino') is not None:
+                lines.append(f"<b>Sortino:</b> {metrics['sortino']:.2f}")
+            if metrics.get('ret_30d') is not None:
+                ret_30d = metrics['ret_30d']
+                color = "#2ecc71" if ret_30d >= 0 else "#e74c3c"
+                lines.append(f"<b>30d Return:</b> <span style='color:{color}'>{ret_30d:+.2%}</span>")
+            if metrics.get('pnl_contrib') is not None:
+                pnl = metrics['pnl_contrib']
+                color = "#2ecc71" if pnl >= 0 else "#e74c3c"
+                lines.append(f"<b>PnL Contrib:</b> <span style='color:{color}'>{pnl:+.2%}</span>")
+            
+            # Risk section
+            if any(k in metrics for k in ['var_95', 'max_dd', 'ann_vol']):
+                lines.append("─" * 20)
+                if metrics.get('var_95') is not None:
+                    lines.append(f"<b>VaR 95%:</b> {metrics['var_95']:.2%}")
+                if metrics.get('max_dd') is not None:
+                    lines.append(f"<b>Max DD:</b> {metrics['max_dd']:.2%}")
+                if metrics.get('ann_vol') is not None:
+                    lines.append(f"<b>Ann Vol:</b> {metrics['ann_vol']:.1%}")
+            
+            # Distribution section
+            if any(k in metrics for k in ['skewness', 'kurtosis']):
+                lines.append("─" * 20)
+                if metrics.get('skewness') is not None:
+                    skew = metrics['skewness']
+                    skew_label = "←Fat L" if skew < -0.5 else ("Fat R→" if skew > 0.5 else "Sym")
+                    lines.append(f"<b>Skew:</b> {skew:.2f} ({skew_label})")
+                if metrics.get('kurtosis') is not None:
+                    kurt = metrics['kurtosis']
+                    kurt_label = "Fat Tails" if kurt > 1 else ("Thin" if kurt < -1 else "Normal")
+                    lines.append(f"<b>Kurt:</b> {kurt:.2f} ({kurt_label})")
+            
+            # Context section
+            if any(k in metrics for k in ['days_held', 'beta', 'hit_rate']):
+                lines.append("─" * 20)
+                if metrics.get('days_held') is not None:
+                    lines.append(f"<b>Days Held:</b> {metrics['days_held']}")
+                if metrics.get('beta') is not None:
+                    lines.append(f"<b>Beta:</b> {metrics['beta']:.2f}")
+                if metrics.get('hit_rate') is not None:
+                    lines.append(f"<b>Hit Rate:</b> {metrics['hit_rate']:.1%}")
+                if metrics.get('n_obs') is not None:
+                    lines.append(f"<b>N Obs:</b> {metrics['n_obs']}")
+            
+            hover_texts.append("<br>".join(lines))
+        
+        custom_hover = True
+    else:
+        hover_texts = [f"<b>{s}</b><br>Weight: {v:+.2%}" for s, v in zip(values.index, values.values)]
+        custom_hover = False
+    
     # Create treemap
     if color_by_value and colorscale is None:
         # Use direct color mapping
@@ -285,7 +421,8 @@ def create_treemap_chart(
                 "colors": colors,
                 "showscale": False,  # Don't show scale for custom colors
             },
-            hovertemplate="<b>%{label}</b><br>Weight: %{text}<extra></extra>",
+            customdata=hover_texts,
+            hovertemplate="%{customdata}<extra></extra>",
         ))
     else:
         fig = go.Figure(go.Treemap(
@@ -300,16 +437,13 @@ def create_treemap_chart(
                 "showscale": True,
                 "colorbar": {"title": "Value"},
             },
-            hovertemplate="<b>%{label}</b><br>Weight: %{text}<extra></extra>",
+            customdata=hover_texts,
+            hovertemplate="%{customdata}<extra></extra>",
         ))
     
-    fig.update_layout(
-        title={"text": title, "font": {"size": 16, "color": PM_COLORS["text"]}},
-        paper_bgcolor=PM_COLORS["background"],
-        font={"color": PM_COLORS["text"]},
-        height=400,
-        margin={"l": 10, "r": 10, "t": 50, "b": 10},
-    )
+    layout = get_plotly_layout(title, height)
+    layout["margin"] = {"l": 10, "r": 10, "t": 50, "b": 10}
+    fig.update_layout(**layout)
     
     return fig
 
@@ -520,12 +654,9 @@ def create_bullet_chart(
         title={"text": title},
     ))
     
-    fig.update_layout(
-        paper_bgcolor=PM_COLORS["background"],
-        font={"color": PM_COLORS["text"]},
-        height=height,
-        margin={"l": 120, "r": 40, "t": 40, "b": 20},
-    )
+    layout = get_plotly_layout(title="", height=height)
+    layout["margin"] = {"l": 120, "r": 40, "t": 40, "b": 20}
+    fig.update_layout(**layout)
     
     return fig
 
@@ -568,12 +699,15 @@ def create_sparkline(
 def create_multi_metric_card(
     metrics: Dict[str, Tuple[float, str, Optional[float]]],
     title: str = "Metrics",
+    height: int = 120,
 ) -> "go.Figure":
     """
     Create a multi-metric card display.
     
     Args:
         metrics: Dict of {name: (value, format, delta)}
+        title: Card title
+        height: Card height
     """
     if not PLOTLY_AVAILABLE:
         return None
@@ -603,12 +737,450 @@ def create_multi_metric_card(
         
         fig.add_trace(go.Indicator(**indicator_params), row=1, col=i+1)
     
-    fig.update_layout(
-        paper_bgcolor=PM_COLORS["background"],
-        font={"color": PM_COLORS["text"]},
-        height=120,
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        title={"text": title, "font": {"size": 14}},
-    )
-    
+    layout = get_plotly_layout(title=title, height=height)
+    layout["title"]["font"]["size"] = 14
+    layout["margin"] = {"l": 20, "r": 20, "t": 40, "b": 20}
+    fig.update_layout(**layout)
+
     return fig
+
+
+# =============================================================================
+# ADVANCED VISUALIZATION COMPONENTS - STRENGTHENED UI FRAMEWORK
+# =============================================================================
+
+def create_3d_risk_surface(
+    x_data: pd.Series,
+    y_data: pd.Series,
+    z_data: pd.Series,
+    x_label: str = "X Variable",
+    y_label: str = "Y Variable",
+    z_label: str = "Risk Measure",
+    title: str = "3D Risk Surface",
+    height: int = 600,
+) -> Optional["go.Figure"]:
+    """
+    Create interactive 3D surface plot for risk analysis.
+    Perfect for visualizing risk across multiple dimensions (e.g., volatility vs drawdown).
+    """
+    if not PLOTLY_AVAILABLE:
+        return None
+
+    try:
+        import plotly.graph_objects as go
+
+        # Create meshgrid for surface
+        x_unique = np.sort(x_data.unique())
+        y_unique = np.sort(y_data.unique())
+
+        X, Y = np.meshgrid(x_unique, y_unique)
+        Z = np.zeros_like(X)
+
+        # Interpolate z values onto grid
+        from scipy.interpolate import griddata
+        points = np.column_stack([x_data.values, y_data.values])
+        Z_flat = griddata(points, z_data.values, (X, Y), method='linear', fill_value=np.nan)
+
+        # Handle NaN values with nearest neighbor interpolation
+        nan_mask = np.isnan(Z_flat)
+        if nan_mask.any():
+            Z_nn = griddata(points, z_data.values, (X, Y), method='nearest')
+            Z_flat[nan_mask] = Z_nn[nan_mask]
+            Z = Z_flat
+        else:
+            Z = Z_flat
+
+        # Create 3D surface
+        fig = go.Figure(data=[go.Surface(
+            x=X, y=Y, z=Z,
+            colorscale=PM_DIVERGING,
+            colorbar=dict(
+                title=z_label,
+                titleside="right",
+                titlefont=dict(size=12, color=PM_COLORS["text"])
+            ),
+            hovertemplate=f"<b>{x_label}</b>: %{{x:.3f}}<br><b>{y_label}</b>: %{{y:.3f}}<br><b>{z_label}</b>: %{{z:.4f}}<extra></extra>",
+        )])
+
+        # Update layout for 3D
+        fig.update_layout(
+            title={"text": title, "font": {"size": 16, "color": PM_COLORS["text"]}},
+            scene=dict(
+                xaxis_title=x_label,
+                yaxis_title=y_label,
+                zaxis_title=z_label,
+                xaxis=dict(
+                    backgroundcolor=PM_COLORS["background"],
+                    gridcolor=PM_COLORS["grid"],
+                    showbackground=True,
+                    zerolinecolor=PM_COLORS["grid"],
+                ),
+                yaxis=dict(
+                    backgroundcolor=PM_COLORS["background"],
+                    gridcolor=PM_COLORS["grid"],
+                    showbackground=True,
+                    zerolinecolor=PM_COLORS["grid"],
+                ),
+                zaxis=dict(
+                    backgroundcolor=PM_COLORS["background"],
+                    gridcolor=PM_COLORS["grid"],
+                    showbackground=True,
+                    zerolinecolor=PM_COLORS["grid"],
+                ),
+                bgcolor=PM_COLORS["background"],
+            ),
+            paper_bgcolor=PM_COLORS["background"],
+            font={"color": PM_COLORS["text"], "size": 11},
+            height=height,
+        )
+
+        return fig
+
+    except Exception as e:
+        print(f"Error creating 3D risk surface: {e}")
+        return None
+
+
+def create_network_graph(
+    nodes: pd.DataFrame,
+    edges: pd.DataFrame,
+    title: str = "Network Graph",
+    height: int = 600,
+    node_color_col: Optional[str] = None,
+    node_size_col: Optional[str] = None,
+    edge_weight_col: Optional[str] = None,
+) -> Optional["go.Figure"]:
+    """
+    Create interactive network graph for relationship visualization.
+    Perfect for factor correlations, stock relationships, or strategy connections.
+    """
+    if not PLOTLY_AVAILABLE:
+        return None
+
+    try:
+        import plotly.graph_objects as go
+
+        # Prepare node data
+        node_x = nodes.get('x', np.random.randn(len(nodes)) * 10)
+        node_y = nodes.get('y', np.random.randn(len(nodes)) * 10)
+        node_text = nodes.get('label', nodes.index)
+
+        # Node colors and sizes
+        node_colors = PM_COLORS["neutral"]
+        if node_color_col and node_color_col in nodes.columns:
+            node_colors = nodes[node_color_col].map({
+                'positive': PM_COLORS["positive"],
+                'negative': PM_COLORS["negative"],
+                'neutral': PM_COLORS["neutral"]
+            }).fillna(PM_COLORS["neutral"])
+
+        node_sizes = 20
+        if node_size_col and node_size_col in nodes.columns:
+            # Scale sizes between 10-40
+            size_data = nodes[node_size_col]
+            node_sizes = 10 + 30 * (size_data - size_data.min()) / (size_data.max() - size_data.min() + 1e-12)
+
+        # Create node traces
+        node_trace = go.Scatter(
+            x=node_x, y=node_y,
+            mode='markers+text',
+            text=node_text,
+            textposition="top center",
+            hoverinfo='text',
+            marker=dict(
+                showscale=False,
+                color=node_colors,
+                size=node_sizes,
+                line_width=2,
+                line_color=PM_COLORS["card"],
+            )
+        )
+
+        # Prepare edge data
+        edge_x = []
+        edge_y = []
+        edge_weights = []
+
+        for _, edge in edges.iterrows():
+            x0, y0 = nodes.loc[edge['source'], ['x', 'y']]
+            x1, y1 = nodes.loc[edge['target'], ['x', 'y']]
+
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+            weight = edge.get(edge_weight_col, 1.0) if edge_weight_col else 1.0
+            edge_weights.extend([weight, weight, None])
+
+        # Create edge trace
+        edge_trace = go.Scatter(
+            x=edge_x, y=edge_y,
+            line=dict(width=1, color=PM_COLORS["grid"]),
+            hoverinfo='none',
+            mode='lines'
+        )
+
+        # Create figure
+        fig = go.Figure(data=[edge_trace, node_trace])
+
+        # Update layout
+        layout = get_plotly_layout(title, height)
+        layout.update(
+            showlegend=False,
+            hovermode='closest',
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        )
+        fig.update_layout(**layout)
+
+        return fig
+
+    except Exception as e:
+        print(f"Error creating network graph: {e}")
+        return None
+
+
+def create_risk_heatmap_with_clusters(
+    data: pd.DataFrame,
+    title: str = "Risk Heatmap with Clusters",
+    height: int = 600,
+    cluster_method: str = "hierarchical",
+    n_clusters: int = 5,
+) -> Optional["go.Figure"]:
+    """
+    Create clustered heatmap for risk/correlation analysis.
+    Uses hierarchical clustering to group similar assets/periods.
+    """
+    if not PLOTLY_AVAILABLE:
+        return None
+
+    try:
+        from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+        from scipy.spatial.distance import pdist
+        import plotly.figure_factory as ff
+
+        # Prepare data matrix
+        data_matrix = data.values
+        row_labels = data.index.tolist()
+        col_labels = data.columns.tolist()
+
+        # Perform hierarchical clustering
+        row_linkage = linkage(pdist(data_matrix), method='ward')
+        col_linkage = linkage(pdist(data_matrix.T), method='ward')
+
+        # Get cluster assignments
+        row_clusters = fcluster(row_linkage, n_clusters, criterion='maxclust')
+        col_clusters = fcluster(col_linkage, n_clusters, criterion='maxclust')
+
+        # Create clustered heatmap
+        fig = ff.create_dendrogram(
+            data_matrix,
+            orientation='bottom',
+            labels=col_labels,
+            linkagefun=lambda x: linkage(x, 'ward')
+        )
+
+        # Add heatmap
+        heatmap = go.Heatmap(
+            z=data_matrix,
+            x=col_labels,
+            y=row_labels,
+            colorscale=PM_DIVERGING,
+            showscale=True,
+            colorbar=dict(
+                title="Value",
+                titleside="right",
+                titlefont=dict(size=12, color=PM_COLORS["text"])
+            ),
+        )
+
+        fig.add_trace(heatmap)
+
+        # Update layout
+        layout = get_plotly_layout(title, height)
+        layout.update(
+            xaxis=dict(
+                tickangle=-45,
+                tickfont=dict(size=10)
+            ),
+            yaxis=dict(
+                tickfont=dict(size=10)
+            )
+        )
+        fig.update_layout(**layout)
+
+        return fig
+
+    except Exception as e:
+        print(f"Error creating clustered heatmap: {e}")
+        return None
+
+
+def create_multi_timeframe_chart(
+    data: pd.DataFrame,
+    primary_metric: str,
+    secondary_metrics: List[str],
+    title: str = "Multi-Timeframe Analysis",
+    height: int = 600,
+) -> Optional["go.Figure"]:
+    """
+    Create multi-timeframe chart showing primary metric with secondary indicators.
+    Perfect for regime analysis and multi-horizon performance.
+    """
+    if not PLOTLY_AVAILABLE:
+        return None
+
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        # Create subplots: main chart + secondary indicators
+        n_secondary = len(secondary_metrics)
+        subplot_titles = [primary_metric] + secondary_metrics
+
+        fig = make_subplots(
+            rows=n_secondary + 1, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=subplot_titles,
+            row_width=[0.6] + [0.4/n_secondary] * n_secondary
+        )
+
+        # Primary metric (full height)
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[primary_metric],
+                mode='lines',
+                name=primary_metric,
+                line=dict(color=PM_COLORS["accent"], width=2),
+                fill='tozeroy',
+                fillcolor='rgba(243, 156, 18, 0.1)',
+            ),
+            row=1, col=1
+        )
+
+        # Secondary metrics (stacked below)
+        colors = [PM_COLORS["positive"], PM_COLORS["negative"], PM_COLORS["neutral"], PM_COLORS["warning"]]
+
+        for i, metric in enumerate(secondary_metrics):
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data[metric],
+                    mode='lines',
+                    name=metric,
+                    line=dict(color=colors[i % len(colors)], width=1),
+                ),
+                row=i+2, col=1
+            )
+
+        # Update layout
+        layout = get_plotly_layout(title, height)
+        layout.update(
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+
+        # Format y-axes appropriately
+        fig.update_yaxes(title_text=primary_metric, row=1, col=1)
+        for i, metric in enumerate(secondary_metrics):
+            fig.update_yaxes(title_text=metric, row=i+2, col=1)
+
+        fig.update_layout(**layout)
+
+        return fig
+
+    except Exception as e:
+        print(f"Error creating multi-timeframe chart: {e}")
+        return None
+
+
+def create_factor_attribution_waterfall(
+    attribution_data: pd.DataFrame,
+    title: str = "Factor Attribution Waterfall",
+    height: int = 500,
+) -> Optional["go.Figure"]:
+    """
+    Create waterfall chart for factor attribution analysis.
+    Shows contribution of each factor to total return.
+    """
+    if not PLOTLY_AVAILABLE:
+        return None
+
+    try:
+        import plotly.graph_objects as go
+
+        # Prepare waterfall data
+        factors = attribution_data.index.tolist()
+        contributions = attribution_data.values.flatten()
+
+        # Calculate cumulative values for waterfall
+        cumulative = np.cumsum(contributions)
+        cumulative = np.concatenate([[0], cumulative[:-1]])
+
+        # Create waterfall traces
+        fig = go.Figure()
+
+        # Positive contributions
+        pos_mask = contributions >= 0
+        if pos_mask.any():
+            fig.add_trace(go.Bar(
+                x=factors,
+                y=np.where(pos_mask, contributions, 0),
+                name="Positive",
+                marker_color=PM_COLORS["positive"],
+                offsetgroup=0,
+            ))
+
+        # Negative contributions
+        neg_mask = contributions < 0
+        if neg_mask.any():
+            fig.add_trace(go.Bar(
+                x=factors,
+                y=np.where(neg_mask, contributions, 0),
+                name="Negative",
+                marker_color=PM_COLORS["negative"],
+                offsetgroup=0,
+            ))
+
+        # Cumulative line
+        fig.add_trace(go.Scatter(
+            x=factors,
+            y=cumulative + contributions,
+            mode='lines+markers',
+            name="Cumulative",
+            line=dict(color=PM_COLORS["accent"], width=3),
+            marker=dict(size=8, color=PM_COLORS["accent"]),
+        ))
+
+        # Update layout
+        layout = get_plotly_layout(title, height)
+        layout.update(
+            barmode='relative',
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5
+            )
+        )
+
+        fig.update_xaxes(title_text="Factors", tickangle=-45)
+        fig.update_yaxes(title_text="Attribution (%)")
+
+        fig.update_layout(**layout)
+
+        return fig
+
+    except Exception as e:
+        print(f"Error creating factor attribution waterfall: {e}")
+        return None

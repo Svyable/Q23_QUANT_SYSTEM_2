@@ -19,6 +19,7 @@ from q23.dashboard._pages._weights import render_weights_page
 from q23.dashboard._pages._factors import render_factors_page
 from q23.dashboard._pages._attribution import render_attribution_page
 from q23.dashboard._pages._diagnostics import render_diagnostics_page
+from q23.dashboard._pages._bias import render_bias_page
 from q23.dashboard._pages._whatif import render_whatif_page
 from q23.dashboard._pages._blotter import render_blotter_page
 from q23.dashboard._pages._rebalance import render_rebalance_page
@@ -69,6 +70,7 @@ __all__ = [
     "render_factors_page",
     "render_attribution_page",
     "render_diagnostics_page",
+    "render_bias_page",
     "render_whatif_page",
     "render_blotter_page",
     "render_rebalance_page",
