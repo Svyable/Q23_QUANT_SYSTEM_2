@@ -116,224 +116,37 @@ def get_strategy_color(
     return STRATEGY_COLORS[strategy_index % len(STRATEGY_COLORS)]
 
 
-# =============================================================================
-# STRATEGY COLOR MANAGEMENT SYSTEM
-# =============================================================================
-
-class StrategyColorManager:
-    """
-    Centralized strategy color management system.
-
-    Provides deterministic color assignment based on strategy IDs,
-    user customization, and persistence across sessions.
-    """
-
-    def __init__(self):
-        self._custom_colors: Dict[str, str] = {}
-        self._load_custom_colors()
-
-    def _load_custom_colors(self) -> None:
-        """Load custom color assignments from persistent storage."""
-        try:
-            import json
-            from pathlib import Path
-
-            color_file = Path("src/q23/dashboard/strategy_colors.json")
-            if color_file.exists():
-                with open(color_file, 'r') as f:
-                    self._custom_colors = json.load(f)
-        except Exception:
-            # If loading fails, start with empty custom colors
-            self._custom_colors = {}
-
-    def _save_custom_colors(self) -> None:
-        """Save custom color assignments to persistent storage."""
-        try:
-            import json
-            from pathlib import Path
-
-            color_file = Path("src/q23/dashboard/strategy_colors.json")
-            color_file.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(color_file, 'w') as f:
-                json.dump(self._custom_colors, f, indent=2)
-        except Exception:
-            # If saving fails, just continue
-            pass
-
-    def get_strategy_color(self, strategy_id: str) -> str:
-        """
-        Get the color for a strategy, with deterministic fallback.
-
-        Priority:
-        1. User-customized color
-        2. Deterministic color based on strategy ID hash
-
-        Args:
-            strategy_id: The strategy identifier
-
-        Returns:
-            Hex color string
-        """
-        # Check for custom color first
-        if strategy_id in self._custom_colors:
-            return self._custom_colors[strategy_id]
-
-        # Use deterministic color assignment based on strategy ID
-        return self._get_deterministic_color(strategy_id)
-
-    def _get_deterministic_color(self, strategy_id: str) -> str:
-        """
-        Generate a deterministic color based on strategy ID hash.
-
-        Uses a hash of the strategy ID to consistently assign colors
-        from the appropriate palette (strategy vs benchmark).
-        """
-        import hashlib
-
-        # Create hash of strategy ID for deterministic assignment
-        hash_obj = hashlib.md5(strategy_id.encode())
-        hash_int = int(hash_obj.hexdigest(), 16)
-
-        # Use different palettes for benchmarks vs strategies
-        if strategy_id in BENCHMARK_STRATEGY_IDS:
-            color_palette = BENCHMARK_COLORS
-        else:
-            color_palette = STRATEGY_COLORS
-
-        # Use hash to select color deterministically
-        color_idx = hash_int % len(color_palette)
-        return color_palette[color_idx]
-
-    def set_custom_color(self, strategy_id: str, color: str) -> None:
-        """
-        Set a custom color for a strategy.
-
-        Args:
-            strategy_id: The strategy identifier
-            color: Hex color string (e.g., '#FF5733')
-        """
-        self._custom_colors[strategy_id] = color
-        self._save_custom_colors()
-
-    def remove_custom_color(self, strategy_id: str) -> None:
-        """
-        Remove custom color for a strategy (revert to default).
-
-        Args:
-            strategy_id: The strategy identifier
-        """
-        if strategy_id in self._custom_colors:
-            del self._custom_colors[strategy_id]
-            self._save_custom_colors()
-
-    def get_all_colors(self, strategy_ids: List[str]) -> Dict[str, str]:
-        """
-        Get color mapping for all provided strategy IDs.
-
-        Args:
-            strategy_ids: List of strategy IDs
-
-        Returns:
-            Dict mapping strategy_id -> hex color
-        """
-        return {sid: self.get_strategy_color(sid) for sid in strategy_ids}
-
-    def get_custom_colors(self) -> Dict[str, str]:
-        """Get all custom color assignments."""
-        return self._custom_colors.copy()
-
-    def reset_all_custom_colors(self) -> None:
-        """Reset all custom colors to defaults."""
-        self._custom_colors = {}
-        self._save_custom_colors()
-
-    def get_color_palette_options(self) -> Dict[str, str]:
-        """
-        Get available color options for customization.
-
-        Returns:
-            Dict of color_name -> hex_color for UI selection
-        """
-        # Combine all palettes for user selection
-        all_colors = {}
-
-        # Strategy colors
-        for i, color in enumerate(STRATEGY_COLORS):
-            all_colors[f"Strategy {i+1}"] = color
-
-        # Benchmark colors
-        for i, color in enumerate(BENCHMARK_COLORS):
-            all_colors[f"Benchmark {i+1}"] = color
-
-        # Add some additional nice colors
-        extra_colors = {
-            "Crimson Red": "#DC143C",
-            "Forest Green": "#228B22",
-            "Royal Blue": "#4169E1",
-            "Dark Orange": "#FF8C00",
-            "Purple": "#9370DB",
-            "Teal": "#008080",
-            "Coral": "#FF7F50",
-            "Steel Blue": "#4682B4",
-            "Olive": "#808000",
-            "Slate Gray": "#708090",
-            "Tomato": "#FF6347",
-            "Medium Sea Green": "#3CB371",
-            "Dodger Blue": "#1E90FF",
-            "Orange Red": "#FF4500",
-            "Medium Purple": "#9370DB",
-        }
-        all_colors.update(extra_colors)
-
-        return all_colors
-
-
-# Global color manager instance
-_color_manager = StrategyColorManager()
-
-def get_strategy_color(strategy_id: str) -> str:
-    """
-    Get the color for a strategy using the global color manager.
-
-    Args:
-        strategy_id: The strategy identifier
-
-    Returns:
-        Hex color string
-    """
-    return _color_manager.get_strategy_color(strategy_id)
-
-def set_strategy_color(strategy_id: str, color: str) -> None:
-    """
-    Set a custom color for a strategy.
-
-    Args:
-        strategy_id: The strategy identifier
-        color: Hex color string
-    """
-    _color_manager.set_custom_color(strategy_id, color)
-
-def get_strategy_color_manager() -> StrategyColorManager:
-    """Get the global strategy color manager instance."""
-    return _color_manager
-
 def build_strategy_color_map(
     strategy_ids: List[str],
 ) -> Dict[str, str]:
     """
     Build a consistent color mapping for a list of strategies.
-
-    Uses the global color manager to ensure consistent colors across
-    all components (charts, UI elements, etc.).
-
+    
+    Separates strategies from benchmarks and assigns colors from the
+    appropriate palette. This ensures that charts and UI elements
+    (like multiselect tags) use matching colors.
+    
     Args:
         strategy_ids: List of strategy IDs to map
-
+    
     Returns:
         Dict mapping strategy_id -> hex color
     """
-    return _color_manager.get_all_colors(strategy_ids)
+    color_map: Dict[str, str] = {}
+    
+    # Separate strategies and benchmarks
+    strategies = [s for s in strategy_ids if s not in BENCHMARK_STRATEGY_IDS]
+    benchmarks = [s for s in strategy_ids if s in BENCHMARK_STRATEGY_IDS]
+    
+    # Assign colors to strategies
+    for idx, sid in enumerate(strategies):
+        color_map[sid] = STRATEGY_COLORS[idx % len(STRATEGY_COLORS)]
+    
+    # Assign colors to benchmarks
+    for idx, sid in enumerate(benchmarks):
+        color_map[sid] = BENCHMARK_COLORS[idx % len(BENCHMARK_COLORS)]
+    
+    return color_map
 
 
 def inject_multiselect_colors(

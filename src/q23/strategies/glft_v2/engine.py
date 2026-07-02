@@ -30,6 +30,7 @@ from q23.strategies.glft_v2.config import (
     GLFT_V2_NOVEL_FACTORS,
 )
 from q23.strategy.outputs import OutputWriter
+from q23.shared import config as global_config
 
 
 @StrategyRegistry.register
@@ -83,6 +84,7 @@ class GLFTv2Strategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required for GLFTv2 strategy")
@@ -108,6 +110,10 @@ class GLFTv2Strategy(StrategyBase):
             max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

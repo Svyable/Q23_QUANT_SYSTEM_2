@@ -1,25 +1,25 @@
 {
   "enabled": {
-    "glft_v3": true,
-    "glft_v2": true,
-    "ou_v1": true,
-    "glft_v1": true,
-    "q23_neural_alpha_v2": true,
-    "q23_composer_v2": true,
     "nasnys_v4": true,
     "qs23_hybrid_alpha": true,
     "q23_composer_v1": true,
+    "benchmark_nys_ew": true,
+    "benchmark_nys_mc": true,
+    "benchmark_nas_ew": true,
+    "benchmark_nas_mc": true,
+    "benchmark_sp500_ew": true,
+    "benchmark_sp500_mc": true,
+    "benchmark_nas100_ew": true,
+    "benchmark_nas100_mc": true,
     "q23_neural_alpha": true,
+    "q23_composer_v2": true,
     "gtp51max": true,
-    "benchmark_nys_ew": false,
-    "benchmark_nys_mc": false,
-    "benchmark_nas_ew": false,
-    "benchmark_nas_mc": false,
-    "benchmark_sp500_ew": false,
-    "benchmark_sp500_mc": false,
-    "benchmark_nas100_ew": false,
-    "benchmark_nas100_mc": false
+    "q23_neural_alpha_v2": true,
+    "ou_v1": true,
+    "glft_v1": true,
+    "glft_v2": true,
+    "glft_v3": true
   },
-  "default_on_startup": "q23_neural_alpha_v2",
-  "last_updated": "2025-12-19T00:00:00"
+  "default_on_startup": null,
+  "last_updated": "2026-01-22T00:50:07.571138"
 }

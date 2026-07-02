@@ -116,11 +116,29 @@ from q23.dashboard.analytics.stock_analytics import (
     generate_stock_alerts,
     # Attribution
     compute_stock_attribution_enhanced,
+    # Batch metrics for treemap
+    compute_batch_stock_metrics,
+    # IC and Decile Analysis
+    compute_spearman_ic_by_horizon,
+    compute_decile_spread_analysis,
+    # Stock vs Portfolio Comparison
+    compute_stock_vs_portfolio_returns,
+    compute_rolling_stock_correlation,
+    compute_rolling_stock_sharpe,
+    compute_stock_portfolio_beta,
+    # Plotly Charts for Stock Analysis
+    create_stock_portfolio_equity_chart,
+    create_rolling_stock_correlation_chart,
+    create_rolling_stock_sharpe_chart,
+    create_ic_by_horizon_chart,
+    create_decile_spread_chart,
+    create_decile_spread_ts_chart,
 )
 from q23.dashboard.analytics.stock_elite_analytics import (
     # Data classes
     EliteStockMetrics,
     RegimePerformance,
+    ForwardReturnEstimate,
     # Regime analysis
     compute_stock_regime_performance,
     get_regime_exposure_summary,
@@ -139,6 +157,10 @@ from q23.dashboard.analytics.stock_elite_analytics import (
     compute_stock_risk_decomposition,
     # Scorecard
     compute_elite_scorecard,
+    # Forward return expectations
+    compute_stock_forward_returns,
+    compute_batch_forward_returns,
+    format_forward_return_cell,
 )
 
 __all__ = [
@@ -238,6 +260,22 @@ __all__ = [
     "compute_stock_correlation_matrix",
     "generate_stock_alerts",
     "compute_stock_attribution_enhanced",
+    "compute_batch_stock_metrics",
+    # IC and Decile Analysis
+    "compute_spearman_ic_by_horizon",
+    "compute_decile_spread_analysis",
+    # Stock vs Portfolio Comparison
+    "compute_stock_vs_portfolio_returns",
+    "compute_rolling_stock_correlation",
+    "compute_rolling_stock_sharpe",
+    "compute_stock_portfolio_beta",
+    # Plotly Charts for Stock Analysis
+    "create_stock_portfolio_equity_chart",
+    "create_rolling_stock_correlation_chart",
+    "create_rolling_stock_sharpe_chart",
+    "create_ic_by_horizon_chart",
+    "create_decile_spread_chart",
+    "create_decile_spread_ts_chart",
     # Stock Elite Analytics
     "EliteStockMetrics",
     "RegimePerformance",
@@ -252,4 +290,9 @@ __all__ = [
     "compute_stock_signal_quality",
     "compute_stock_risk_decomposition",
     "compute_elite_scorecard",
+    # Forward return expectations
+    "ForwardReturnEstimate",
+    "compute_stock_forward_returns",
+    "compute_batch_forward_returns",
+    "format_forward_return_cell",
 ]

@@ -244,18 +244,24 @@ def safe_corrcoef(x: np.ndarray, y: Optional[np.ndarray] = None, eps: float = 1e
     
     # Handle 2D case (correlation matrix)
     if y is None and x.ndim == 2:
+        # Check if we have enough data points for correlation computation
+        if x.shape[0] < 2:
+            # Not enough rows for correlation - return identity matrix
+            n = x.shape[1]
+            return np.eye(n, dtype=float)
+
         # Check for constant columns (zero std)
         stds = np.nanstd(x, axis=0, ddof=1)
         valid = stds > eps
-        
+
         if not np.any(valid):
             # All columns are constant
             n = x.shape[1]
             return np.eye(n, dtype=float)
-        
+
         # Only compute correlation for non-constant columns
         x_valid = x[:, valid]
-        
+
         if x_valid.shape[1] < 2:
             return np.array([[1.0]], dtype=float)
         
@@ -288,6 +294,10 @@ def safe_corrcoef(x: np.ndarray, y: Optional[np.ndarray] = None, eps: float = 1e
         if len(x) != len(y):
             raise ValueError("x and y must have the same length")
         
+        # Check if we have enough data points
+        if len(x) < 2:
+            return 0.0  # Cannot compute correlation with < 2 points
+
         # Check for constant arrays
         x_std = np.nanstd(x, ddof=1)
         y_std = np.nanstd(y, ddof=1)

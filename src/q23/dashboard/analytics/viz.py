@@ -178,9 +178,10 @@ def create_calendar_heatmap(
         year_data = ret_df[ret_df['year'] == year]
 
         cal_data = np.full((12, 31), np.nan)
-        for _, row in year_data.iterrows():
-            m, d = int(row['month']) - 1, int(row['day']) - 1
-            cal_data[m, d] = row['ret']
+        # Use itertuples() instead of iterrows() for better performance
+        for row in year_data.itertuples(index=False):
+            m, d = int(row.month) - 1, int(row.day) - 1
+            cal_data[m, d] = row.ret
 
         im = ax.imshow(cal_data, aspect='auto', cmap='RdYlGn', 
                       vmin=vmin, vmax=vmax, interpolation='nearest')

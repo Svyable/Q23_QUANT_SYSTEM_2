@@ -35,6 +35,10 @@ class InsightCategory(Enum):
     FACTOR = "factor"
     REGIME = "regime"
     TRADING = "trading"
+    PREDICTIVE = "predictive"  # New: ML-based predictions
+    OPTIMIZATION = "optimization"  # New: Portfolio optimization opportunities
+    MARKET_TIMING = "timing"  # New: Market timing signals
+    STRUCTURAL = "structural"  # New: Structural changes in portfolio
 
 
 @dataclass
@@ -140,7 +144,407 @@ class PMInsightEngine:
         self._analyze_trading(weights)
         
         return self.insights
-    
+
+    def analyze_predictive_signals(
+        self,
+        returns: pd.Series,
+        features: Optional[pd.DataFrame] = None,
+        forecast_horizon: int = 21,
+    ) -> List[PMInsight]:
+        """
+        Generate predictive analytics insights using ML forecasting.
+        """
+        self.clear()
+
+        if len(returns) < 100:
+            return self.insights
+
+        try:
+            from q23.dashboard.analytics.advanced import PredictiveReturnForecaster
+
+            forecaster = PredictiveReturnForecaster()
+
+            # Prepare features if not provided
+            if features is None:
+                # Use simple lagged returns as features
+                features = pd.DataFrame({
+                    f'lag_{i}d': returns.shift(i) for i in [1, 2, 3, 5, 10, 21]
+                }).dropna()
+
+            # Align data
+            common_idx = features.index.intersection(returns.index)
+            features_aligned = features.loc[common_idx]
+            returns_aligned = returns.loc[common_idx]
+
+            # Train models
+            results = forecaster.train_models(features_aligned, returns_aligned)
+
+            # Analyze model performance
+            ensemble_r2 = (results['rf']['test_r2'] + results['gb']['test_r2']) / 2
+
+            if ensemble_r2 > 0.1:  # Decent predictive power
+                self._add_insight(
+                    "Strong Predictive Signals Detected",
+                    f"ML models show {ensemble_r2:.1%} R² in out-of-sample testing, indicating predictive power for {forecast_horizon}-day returns.",
+                    InsightSeverity.INFO,
+                    InsightCategory.PREDICTIVE,
+                    ensemble_r2,
+                    recommendation="Consider incorporating these signals into portfolio positioning."
+                )
+            elif ensemble_r2 > 0.05:
+                self._add_insight(
+                    "Moderate Predictive Signals",
+                    f"ML models show {ensemble_r2:.1%} R², suggesting some predictive information available.",
+                    InsightSeverity.INFO,
+                    InsightCategory.PREDICTIVE,
+                    ensemble_r2,
+                )
+            else:
+                self._add_insight(
+                    "Weak Predictive Signals",
+                    f"ML models show only {ensemble_r2:.1%} R², indicating limited predictive power.",
+                    InsightSeverity.WARNING,
+                    InsightCategory.PREDICTIVE,
+                    ensemble_r2,
+                )
+
+            # Analyze feature importance
+            if forecaster.feature_importance:
+                top_features = {}
+                for model_name, importance_dict in forecaster.feature_importance.items():
+                    sorted_features = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
+                    top_features[model_name] = sorted_features[:3]
+
+                # Check for dominant factors
+                rf_top = top_features.get('rf', [])
+                if rf_top and rf_top[0][1] > 0.3:
+                    self._add_insight(
+                        f"Dominant Factor: {rf_top[0][0]}",
+                        f"Feature {rf_top[0][0]} explains {rf_top[0][1]:.1%} of predictive power.",
+                        InsightSeverity.INFO,
+                        InsightCategory.PREDICTIVE,
+                        rf_top[0][1],
+                    )
+
+        except Exception as e:
+            self._add_insight(
+                "Predictive Analysis Error",
+                f"Could not complete ML forecasting analysis: {str(e)}",
+                InsightSeverity.WARNING,
+                InsightCategory.PREDICTIVE,
+            )
+
+        return self.insights
+
+    def analyze_portfolio_optimization_opportunities(
+        self,
+        weights: pd.DataFrame,
+        returns: pd.Series,
+        covariance: Optional[pd.DataFrame] = None,
+    ) -> List[PMInsight]:
+        """
+        Identify portfolio optimization opportunities.
+        """
+        self.clear()
+
+        try:
+            from q23.dashboard.analytics.risk_analytics import compute_beta_analysis
+
+            # Calculate current portfolio characteristics
+            w_current = weights.iloc[-1]
+            active_positions = w_current[w_current.abs() > 1e-4]
+
+            # Concentration analysis
+            top5_concentration = active_positions.abs().nlargest(5).sum()
+            herfindahl = (active_positions ** 2).sum()
+
+            if top5_concentration > 0.5:
+                self._add_insight(
+                    "High Concentration Risk",
+                    f"Top 5 positions represent {top5_concentration:.1%} of portfolio, increasing idiosyncratic risk.",
+                    InsightSeverity.WARNING,
+                    InsightCategory.OPTIMIZATION,
+                    top5_concentration,
+                    0.5,
+                    recommendation="Consider diversifying across more positions or sectors."
+                )
+
+            if herfindahl > 0.15:
+                self._add_insight(
+                    "Extreme Concentration",
+                    f"Herfindahl index of {herfindahl:.1%} indicates very concentrated portfolio.",
+                    InsightSeverity.ALERT,
+                    InsightCategory.OPTIMIZATION,
+                    herfindahl,
+                    0.15,
+                    recommendation="Rebalance to reduce single-position concentration risk."
+                )
+
+            # Risk-adjusted return opportunities
+            if covariance is not None:
+                # Calculate risk contributions
+                port_vol = np.sqrt(w_current.T @ covariance @ w_current)
+                marginal_contrib = covariance @ w_current
+                risk_contrib = w_current * marginal_contrib
+
+                # Find positions with high risk contribution relative to weight
+                risk_weight_ratio = risk_contrib / w_current
+                high_risk_positions = risk_weight_ratio[risk_weight_ratio > risk_weight_ratio.quantile(0.9)]
+
+                if len(high_risk_positions) > 0:
+                    top_risk_pos = high_risk_positions.idxmax()
+                    self._add_insight(
+                        f"High Risk Contribution: {top_risk_pos}",
+                        f"Position contributes disproportionately to portfolio risk ({high_risk_positions.max():.1%} risk per unit weight).",
+                        InsightSeverity.WARNING,
+                        InsightCategory.OPTIMIZATION,
+                        high_risk_positions.max(),
+                        recommendation="Consider reducing position size or hedging."
+                    )
+
+            # Turnover analysis for transaction costs
+            if len(weights) > 1:
+                turnover = (weights - weights.shift(1).fillna(0)).abs().sum(axis=1).mean()
+                if turnover > 0.05:  # 5% monthly turnover
+                    self._add_insight(
+                        "High Portfolio Turnover",
+                        f"Average monthly turnover of {turnover:.1%} may increase transaction costs significantly.",
+                        InsightSeverity.WARNING,
+                        InsightCategory.OPTIMIZATION,
+                        turnover,
+                        0.05,
+                        recommendation="Review rebalancing frequency and transaction cost impact."
+                    )
+
+        except Exception as e:
+            self._add_insight(
+                "Optimization Analysis Error",
+                f"Could not complete optimization analysis: {str(e)}",
+                InsightSeverity.WARNING,
+                InsightCategory.OPTIMIZATION,
+            )
+
+        return self.insights
+
+    def analyze_market_timing_signals(
+        self,
+        returns: pd.Series,
+        regime_data: Optional[pd.DataFrame] = None,
+        macro_indicators: Optional[pd.DataFrame] = None,
+    ) -> List[PMInsight]:
+        """
+        Analyze market timing and regime-based signals.
+        """
+        self.clear()
+
+        try:
+            from q23.dashboard.analytics.advanced import RegimeDetector
+
+            # Detect market regimes if not provided
+            if regime_data is None:
+                detector = RegimeDetector(returns)
+                regime_data = detector.detect_regimes()
+
+            current_regime = regime_data.iloc[-1]['regime']
+            regime_confidence = len(regime_data[regime_data['regime'] == current_regime]) / len(regime_data)
+
+            # Regime transition analysis
+            regime_changes = regime_data['regime'] != regime_data['regime'].shift(1)
+            recent_changes = regime_changes.tail(21).sum()  # Last ~1 month
+
+            if recent_changes > 2:
+                self._add_insight(
+                    "Regime Instability",
+                    f"Detected {recent_changes} regime changes in past 21 days, indicating market uncertainty.",
+                    InsightSeverity.WARNING,
+                    InsightCategory.TIMING,
+                    recent_changes,
+                    recommendation="Monitor closely for potential regime shift."
+                )
+
+            # Current regime assessment
+            regime_characteristics = {
+                'crisis': {'volatility': 'high', 'returns': 'negative', 'action': 'defensive'},
+                'normal': {'volatility': 'moderate', 'returns': 'neutral', 'action': 'balanced'},
+                'trend': {'volatility': 'moderate', 'returns': 'positive', 'action': 'aggressive'},
+                'calm': {'volatility': 'low', 'returns': 'neutral', 'action': 'risk-on'},
+            }
+
+            if current_regime in regime_characteristics:
+                chars = regime_characteristics[current_regime]
+                confidence_level = "high" if regime_confidence > 0.7 else "moderate" if regime_confidence > 0.5 else "low"
+
+                self._add_insight(
+                    f"Current Market Regime: {current_regime.title()}",
+                    f"Market shows {chars['volatility']} volatility with {chars['returns']} return profile. Recommended action: {chars['action']} positioning. Confidence: {confidence_level} ({regime_confidence:.1%}).",
+                    InsightSeverity.INFO,
+                    InsightCategory.TIMING,
+                    regime_confidence,
+                )
+
+            # Momentum analysis
+            short_momentum = returns.tail(21).mean() / returns.tail(252).std()
+            medium_momentum = returns.tail(63).mean() / returns.tail(252).std()
+
+            if short_momentum > 2 and medium_momentum > 1.5:
+                self._add_insight(
+                    "Strong Positive Momentum",
+                    f"Short-term momentum ({short_momentum:.1f}σ) and medium-term ({medium_momentum:.1f}σ) both elevated, suggesting bullish conditions.",
+                    InsightSeverity.INFO,
+                    InsightCategory.TIMING,
+                    short_momentum,
+                    recommendation="Consider increasing exposure to momentum factors."
+                )
+            elif short_momentum < -2 and medium_momentum < -1.5:
+                self._add_insight(
+                    "Strong Negative Momentum",
+                    f"Both short-term ({short_momentum:.1f}σ) and medium-term ({medium_momentum:.1f}σ) momentum negative, suggesting risk-off conditions.",
+                    InsightSeverity.ALERT,
+                    InsightCategory.TIMING,
+                    short_momentum,
+                    recommendation="Consider defensive positioning and risk reduction."
+                )
+
+            # Macro indicator analysis
+            if macro_indicators is not None:
+                # Simple macro regime detection based on common indicators
+                macro_regime_signals = []
+
+                if 'vix' in macro_indicators.columns:
+                    vix_current = macro_indicators['vix'].iloc[-1]
+                    vix_ma = macro_indicators['vix'].tail(21).mean()
+                    if vix_current > vix_ma * 1.2:
+                        macro_regime_signals.append("elevated volatility")
+
+                if 'yield_curve' in macro_indicators.columns:
+                    yc_current = macro_indicators['yield_curve'].iloc[-1]
+                    if yc_current < 0:
+                        macro_regime_signals.append("inverted yield curve")
+
+                if macro_regime_signals:
+                    self._add_insight(
+                        "Macro Regime Signals",
+                        f"Market showing: {', '.join(macro_regime_signals)}. Consider adjusting portfolio positioning accordingly.",
+                        InsightSeverity.WARNING,
+                        InsightCategory.TIMING,
+                        len(macro_regime_signals),
+                    )
+
+        except Exception as e:
+            self._add_insight(
+                "Timing Analysis Error",
+                f"Could not complete market timing analysis: {str(e)}",
+                InsightSeverity.WARNING,
+                InsightCategory.TIMING,
+            )
+
+        return self.insights
+
+    def analyze_structural_changes(
+        self,
+        weights_history: pd.DataFrame,
+        returns: pd.Series,
+        lookback_periods: int = 252,
+    ) -> List[PMInsight]:
+        """
+        Detect structural changes in portfolio composition and market relationships.
+        """
+        self.clear()
+
+        try:
+            # Structural break analysis using rolling correlations
+            if len(weights_history) > lookback_periods:
+                # Factor exposure stability
+                exposure_stability = weights_history.rolling(lookback_periods).std().mean(axis=1)
+                recent_stability = exposure_stability.tail(21).mean()
+                long_term_stability = exposure_stability.tail(lookback_periods).mean()
+
+                stability_ratio = recent_stability / (long_term_stability + 1e-12)
+
+                if stability_ratio > 2:
+                    self._add_insight(
+                        "Increasing Portfolio Instability",
+                        f"Recent exposure volatility ({stability_ratio:.1f}x) significantly higher than long-term average, suggesting structural changes.",
+                        InsightSeverity.WARNING,
+                        InsightCategory.STRUCTURAL,
+                        stability_ratio,
+                        recommendation="Review factor exposures and rebalancing strategy."
+                    )
+
+            # Position size distribution changes
+            w_current = weights_history.iloc[-1]
+            w_previous = weights_history.iloc[-21] if len(weights_history) > 21 else weights_history.iloc[0]
+
+            # Compare concentration metrics
+            current_herfindahl = (w_current ** 2).sum()
+            previous_herfindahl = (w_previous ** 2).sum()
+
+            concentration_change = (current_herfindahl - previous_herfindahl) / (previous_herfindahl + 1e-12)
+
+            if abs(concentration_change) > 0.5:
+                direction = "increased" if concentration_change > 0 else "decreased"
+                severity = InsightSeverity.WARNING if abs(concentration_change) > 1 else InsightSeverity.INFO
+
+                self._add_insight(
+                    f"Portfolio Concentration {direction.title()}",
+                    f"Portfolio concentration has {direction} by {abs(concentration_change):.1%} over past 21 days.",
+                    severity,
+                    InsightCategory.STRUCTURAL,
+                    concentration_change,
+                    recommendation="Monitor for unintended concentration risk changes."
+                )
+
+            # New position analysis
+            new_positions = set(w_current[w_current.abs() > 1e-4].index) - set(w_previous[w_previous.abs() > 1e-4].index)
+            exited_positions = set(w_previous[w_previous.abs() > 1e-4].index) - set(w_current[w_current.abs() > 1e-4].index)
+
+            if len(new_positions) > 3:
+                self._add_insight(
+                    "Significant Portfolio Changes",
+                    f"Added {len(new_positions)} new positions in recent period, indicating major strategy shift.",
+                    InsightSeverity.INFO,
+                    InsightCategory.STRUCTURAL,
+                    len(new_positions),
+                )
+
+            if len(exited_positions) > 3:
+                self._add_insight(
+                    "Positions Exited",
+                    f"Removed {len(exited_positions)} positions, potentially signaling factor rotation.",
+                    InsightSeverity.INFO,
+                    InsightCategory.STRUCTURAL,
+                    len(exited_positions),
+                )
+
+            # Performance attribution to structural changes
+            if len(weights_history) > 21:
+                # Simple attribution: compare returns with different weight sets
+                recent_returns = returns.tail(21)
+                old_weights = weights_history.iloc[-21]
+                new_weights = weights_history.iloc[-1]
+
+                # Simplified attribution (would need proper return attribution in production)
+                structural_impact = abs((new_weights - old_weights).abs().sum()) * recent_returns.std()
+
+                if structural_impact > recent_returns.std():
+                    self._add_insight(
+                        "Structural Changes Impact Performance",
+                        f"Recent portfolio restructuring may have significantly impacted returns (impact: {structural_impact:.1%} annualized vol equivalent).",
+                        InsightSeverity.INFO,
+                        InsightCategory.STRUCTURAL,
+                        structural_impact,
+                    )
+
+        except Exception as e:
+            self._add_insight(
+                "Structural Analysis Error",
+                f"Could not complete structural change analysis: {str(e)}",
+                InsightSeverity.WARNING,
+                InsightCategory.STRUCTURAL,
+            )
+
+        return self.insights
+
     def _add_insight(
         self,
         title: str,

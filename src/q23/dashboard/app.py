@@ -38,6 +38,7 @@ from q23.dashboard.core import (
 )
 from q23.dashboard.components import inject_custom_css
 from q23.dashboard.admin_settings import initialize_admin_defaults
+from q23.dashboard._pages._calendar_heatmap import render_calendar_heatmap_page
 from q23.dashboard._pages import (
     # Sidebar
     SidebarState,
@@ -58,8 +59,10 @@ from q23.dashboard._pages import (
     render_live_strategy_page,
     render_strategy_warehouse,
     render_strategy_comparison,
+    render_position_stack,
     render_stock_analysis_page,
     render_stock_elite_analytics_page,
+    render_calendar_heatmap_page,
     # Elite analytics
     render_regime_analysis_page,
     render_tail_risk_page,
@@ -120,18 +123,19 @@ except Exception:
 # DATA LOADING
 # =============================================================================
 
-if sidebar_state.use_multi_strategy and sidebar_state.selected_strategy:
-    data = load_strategy_dashboard_data(
-        sidebar_state.selected_strategy,
-        sidebar_state.tag,
-        date_range=sidebar_state.date_range,
-    )
-else:
-    data = load_dashboard_data(
-        sidebar_state.tag,
-        sidebar_state.base_dir,
-        sidebar_state.base_name,
-    )
+with st.spinner("🔄 Loading dashboard data..."):
+    if sidebar_state.use_multi_strategy and sidebar_state.selected_strategy:
+        data = load_strategy_dashboard_data(
+            sidebar_state.selected_strategy,
+            sidebar_state.tag,
+            date_range=sidebar_state.date_range,
+        )
+    else:
+        data = load_dashboard_data(
+            sidebar_state.tag,
+            sidebar_state.base_dir,
+            sidebar_state.base_name,
+        )
 
 if data.weights is None or data.weights.empty:
     st.error("Could not load weights for this tag.")
@@ -187,8 +191,17 @@ PAGE_REGISTRY = {
         ),
         date_range=sidebar_state.date_range,
     ),
+    "Position Stack": lambda: render_position_stack(
+        current_strategy=(
+            sidebar_state.selected_strategy
+            if sidebar_state.use_multi_strategy
+            else ""
+        ),
+        date_range=sidebar_state.date_range,
+    ),
     "Stock Analysis": lambda: render_stock_analysis_page(data),
     "Stock Elite": lambda: render_stock_elite_analytics_page(data),
+    "Calendar Heatmap": lambda: render_calendar_heatmap_page(data),
 }
 
 # Execute the selected page with error boundary

@@ -5,13 +5,13 @@
 ### 1. Dynamic Strategy Discovery
 
 **Before**: Hardcoded strategy flags in `run_strategy.py`
-- `Q23_RUN_V4`
+- `Q23_RUN_V4` (legacy StrategyEngine - DEPRECATED and REMOVED)
 - `Q23_RUN_NASNYS1010` (legacy stub)
 - `Q23_RUN_Q23LSNEW3` (legacy stub)
 
 **After**: Automatically discovers strategies from `StrategyRegistry`
-- `Q23_RUN_V4` (legacy StrategyEngine, still supported)
 - `Q23_RUN_<strategy_id>` for each registered strategy
+- Legacy StrategyEngine (`Q23_RUN_V4`) has been fully removed
 
 ### 2. Environment Variable Naming Convention
 
@@ -38,7 +38,8 @@ The following strategies are automatically discovered:
 
 ### 4. Backward Compatibility
 
-- `Q23_RUN_V4` still works for legacy `StrategyEngine`
+- Legacy `StrategyEngine` mode (`Q23_RUN_V4`) has been fully deprecated and removed
+- All strategy execution now goes through the `StrategyRegistry` system
 - Old environment variables (`Q23_RUN_NASNYS1010`, `Q23_RUN_Q23LSNEW3`) are no longer used
 - Script provides helpful warnings if no strategies are enabled
 
@@ -63,7 +64,7 @@ The following strategies are automatically discovered:
 
 ### Update Your .env File
 
-**Old format** (deprecated):
+**Old format** (deprecated and removed):
 ```bash
 Q23_RUN_V4=true
 Q23_RUN_NASNYS1010=false
@@ -72,14 +73,14 @@ Q23_RUN_Q23LSNEW3=false
 
 **New format**:
 ```bash
-# Legacy StrategyEngine (optional)
-Q23_RUN_V4=false
-
-# Registered strategies
+# Registered strategies (use enabled_strategies.json via Strategy Warehouse - RECOMMENDED)
+# Legacy environment variables are deprecated but still work:
 Q23_RUN_NASNYS_V4=true
 Q23_RUN_QS23_HYBRID_ALPHA=false
 Q23_RUN_Q23_COMPOSER_V1=false
 ```
+
+**Note**: `Q23_RUN_V4` (legacy StrategyEngine) has been fully removed. All strategies must be registered in the StrategyRegistry.
 
 ### Adding New Strategies
 
@@ -95,7 +96,6 @@ When you add a new strategy to `StrategyRegistry`:
 2. **Consistency**: Environment variables match strategy IDs
 3. **Discoverability**: Script shows available strategies if none are enabled
 4. **Flexibility**: Easy to enable/disable strategies via `.env` file
-5. **Backward Compatible**: Legacy `Q23_RUN_V4` still works
 
 ## Testing
 

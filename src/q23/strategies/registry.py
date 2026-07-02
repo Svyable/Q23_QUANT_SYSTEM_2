@@ -130,6 +130,11 @@ class StrategyRegistry:
         except ImportError:
             pass
 
+        try:
+            from q23.strategies import gpt52v4  # GPT5.2 v4 adaptive sleeve ensemble
+        except ImportError:
+            pass
+
     @classmethod
     def reset(cls) -> None:
         cls._strategies.clear()

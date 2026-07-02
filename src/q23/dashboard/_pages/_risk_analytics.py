@@ -105,7 +105,7 @@ def _get_factor_color(factor_name: str) -> str:
 def _create_brinson_attribution_chart(
     data: pd.DataFrame,
     title: str = "Attribution Effects",
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a Brinson attribution time series chart with proper colors."""
     if not PLOTLY_AVAILABLE:
@@ -141,13 +141,13 @@ def _create_brinson_attribution_chart(
             hovertemplate=f"<b>{display_name}</b><br>%{{x}}<br>Value: %{{y:.2%}}<extra></extra>",
         ))
     
-    fig.update_layout(
-        title={"text": title, "font": {"size": 16, "color": "#FAFAFA"}},
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#262730",
-        font={"color": "#FAFAFA", "size": 11},
-        height=height,
-        legend=dict(
+    layout = {
+        "title": {"text": title, "font": {"size": 16, "color": "#FAFAFA"}},
+        "paper_bgcolor": "#0E1117",
+        "plot_bgcolor": "#262730",
+        "font": {"color": "#FAFAFA", "size": 11},
+        "autosize": True,
+        "legend": dict(
             bgcolor="rgba(0,0,0,0.5)",
             bordercolor="#3A3A3A",
             borderwidth=1,
@@ -157,20 +157,23 @@ def _create_brinson_attribution_chart(
             xanchor="right",
             x=1,
         ),
-        xaxis={
+        "xaxis": {
             "gridcolor": "#3A3A3A",
             "zerolinecolor": "#3A3A3A",
         },
-        yaxis={
+        "yaxis": {
             "title": "Cumulative Return",
             "tickformat": ".1%",
             "gridcolor": "#3A3A3A",
             "zerolinecolor": "#555555",
             "zerolinewidth": 2,
         },
-        hovermode="x unified",
-        margin={"l": 60, "r": 40, "t": 80, "b": 40},
-    )
+        "hovermode": "x unified",
+        "margin": {"l": 60, "r": 40, "t": 80, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
@@ -178,7 +181,7 @@ def _create_brinson_attribution_chart(
 def _create_factor_contribution_chart(
     contributions: pd.Series,
     title: str = "Factor Contributions",
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a factor contribution bar chart with proper factor colors."""
     if not PLOTLY_AVAILABLE:
@@ -237,7 +240,7 @@ def _create_factor_contribution_chart(
 def _create_risk_cone_chart(
     projection: ForwardRiskProjection,
     title: str = "Forward Risk Cone (T+1 to T+5)",
-    height: int = 450,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """
     Create a risk cone fan chart showing portfolio value projections.
@@ -403,7 +406,7 @@ def _create_expected_return_distribution(
     historical_mean: float,
     historical_std: float,
     title: str = "Expected Return Distribution",
-    height: int = 350,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """
     Create a histogram of historical expected returns with current estimate marked.
@@ -483,7 +486,7 @@ def _create_expected_return_distribution(
 def _create_signal_freshness_gauge(
     freshness: float,
     trend: str,
-    height: int = 200,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a gauge showing signal/IC freshness."""
     if not PLOTLY_AVAILABLE:
@@ -691,7 +694,7 @@ def render_risk_attribution_page(data: DashboardData):
                         height=400,
                     )
                     if fig:
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig)
                     else:
                         # Fallback to default
                         fig = create_risk_contribution_chart(
@@ -700,7 +703,7 @@ def render_risk_attribution_page(data: DashboardData):
                             height=400,
                         )
                         if fig:
-                            st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
                 else:
                     st.bar_chart(
                         risk_result.factor_contributions.sort_values(ascending=True).tail(15)
@@ -738,7 +741,7 @@ def render_risk_attribution_page(data: DashboardData):
                         fill=True,
                     )
                     if fig:
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig)
                 else:
                     st.line_chart(rolling_vol.to_frame("Portfolio Volatility"), height=300)
                 
@@ -795,11 +798,8 @@ def _estimate_asset_returns_proxy(
     # r_asset ≈ (w_asset / Σ|w|) * portfolio_return + noise
     # This is a simplification for demonstration - real asset returns would be better
     
-    asset_returns = pd.DataFrame(
-        index=common_idx,
-        columns=weights_aligned.columns,
-        dtype=float,
-    )
+    # Collect return rows to avoid DataFrame fragmentation
+    return_rows = []
     
     np.random.seed(42)  # Reproducibility
     
@@ -814,9 +814,17 @@ def _estimate_asset_returns_proxy(
             # Add some cross-sectional variation
             noise = np.random.randn(len(w)) * abs(port_r) * 0.3
             # Asset return estimate
-            asset_returns.loc[date] = base_return + noise
+            return_rows.append(base_return + noise)
         else:
-            asset_returns.loc[date] = 0.0
+            return_rows.append(np.zeros(len(w)))
+    
+    # Build DataFrame at once to avoid fragmentation
+    asset_returns = pd.DataFrame(
+        return_rows,
+        index=common_idx,
+        columns=weights_aligned.columns,
+        dtype=float,
+    )
     
     return asset_returns.fillna(0.0)
 
@@ -919,7 +927,7 @@ def render_brinson_attribution_page(
             if COMPONENTS_AVAILABLE and PLOTLY_AVAILABLE:
                 fig = _create_brinson_attribution_chart(cum_attr, title="Cumulative Attribution Effects")
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 st.line_chart(cum_attr, height=400)
             
@@ -931,7 +939,7 @@ def render_brinson_attribution_page(
                 if COMPONENTS_AVAILABLE and PLOTLY_AVAILABLE:
                     fig = _create_brinson_attribution_chart(rolling_attr, title="Rolling 21-Day Attribution")
                     if fig:
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig)
                 else:
                     st.line_chart(rolling_attr, height=300)
             
@@ -957,7 +965,7 @@ def render_brinson_attribution_page(
                 })
                 fig = create_waterfall_chart(waterfall_data, title="Active Return Decomposition")
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 # Fallback: simple bar chart
                 effect_data = pd.DataFrame({
@@ -1107,7 +1115,7 @@ def render_ex_ante_risk_page(data: DashboardData):
             if PLOTLY_AVAILABLE:
                 fig = _create_risk_cone_chart(projection, height=450)
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 # Fallback: table
                 st.dataframe(projection.to_dataframe())
@@ -1238,7 +1246,7 @@ def render_ex_ante_risk_page(data: DashboardData):
                     title="Expected Return vs Historical Distribution",
                 )
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         
         with col2:
             st.markdown("**📊 Historical Context**")
@@ -1262,7 +1270,7 @@ def render_ex_ante_risk_page(data: DashboardData):
                     height=180,
                 )
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 freshness_pct = return_estimate.signal_freshness * 100
                 st.metric("Freshness", f"{freshness_pct:.0f}%")
@@ -1385,7 +1393,7 @@ def render_ex_ante_risk_page(data: DashboardData):
                         if PLOTLY_AVAILABLE:
                             fig = _create_factor_contribution_chart(contrib, title="Factor Risk Contributions", height=350)
                             if fig:
-                                st.plotly_chart(fig, width='stretch')
+                                st.plotly_chart(fig)
                         else:
                             st.bar_chart(contrib.tail(12))
             except Exception as e:
@@ -1442,7 +1450,7 @@ def _get_sector_color(sector_name: str) -> str:
 def _create_sector_bar_chart(
     sector_data: pd.Series,
     title: str = "Sector Allocation",
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a bar chart with coordinated sector colors."""
     from q23.dashboard.components.charts import PLOTLY_AVAILABLE
@@ -1498,7 +1506,7 @@ def _create_sector_bar_chart(
 
 def _create_sector_timeseries_chart(
     sector_exp: pd.DataFrame,
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a time series chart with coordinated sector colors."""
     from q23.dashboard.components.charts import PLOTLY_AVAILABLE
@@ -1726,7 +1734,7 @@ def _compute_sector_health_metrics(
 
 def _create_sector_health_chart(
     health_metrics: pd.DataFrame,
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create an enhanced sector health score chart with component breakdown."""
     from q23.dashboard.components.charts import PLOTLY_AVAILABLE
@@ -1917,7 +1925,7 @@ def _create_sector_health_chart(
 
 def _create_sector_risk_heatmap(
     health_metrics: pd.DataFrame,
-    height: int = 400,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a risk heatmap showing exposure vs risk contribution."""
     from q23.dashboard.components.charts import PLOTLY_AVAILABLE
@@ -2139,7 +2147,7 @@ def render_sector_analysis_page(
                         return ""
                 
                 st.dataframe(
-                    display_metrics.style.applymap(
+                    display_metrics.style.map(
                         color_health_score,
                         subset=["Health"]
                     ),
@@ -2628,7 +2636,7 @@ def render_beta_analysis_page(data: DashboardData):
             if PLOTLY_AVAILABLE:
                 fig = _create_factor_beta_chart(current_sorted, height=400)
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 st.bar_chart(current_sorted)
         
@@ -2642,7 +2650,7 @@ def render_beta_analysis_page(data: DashboardData):
             if PLOTLY_AVAILABLE:
                 fig = _create_rolling_beta_chart(betas[top_factors], title=f"Rolling {window}-Day Factor Betas", height=450)
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 st.line_chart(betas[top_factors], height=400)
         
@@ -2714,7 +2722,7 @@ def render_beta_analysis_page(data: DashboardData):
             if len(weekly_betas) > 4 and PLOTLY_AVAILABLE:
                 fig = _create_beta_heatmap(weekly_betas.tail(52), title="Weekly Factor Betas (Last Year)")
                 if fig:
-                    st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
             else:
                 st.dataframe(
                     weekly_betas.tail(26).style.format("{:.2f}").background_gradient(
@@ -2919,7 +2927,7 @@ def _generate_beta_insights(stability_metrics: Dict, current_betas: pd.Series) -
     return insights
 
 
-def _create_factor_beta_chart(betas: pd.Series, height: int = 400) -> Optional["go.Figure"]:
+def _create_factor_beta_chart(betas: pd.Series, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create an enhanced factor beta bar chart."""
     if not PLOTLY_AVAILABLE:
         return None
@@ -2979,7 +2987,7 @@ def _create_factor_beta_chart(betas: pd.Series, height: int = 400) -> Optional["
     return fig
 
 
-def _create_rolling_beta_chart(betas: pd.DataFrame, title: str = "Rolling Factor Betas", height: int = 450) -> Optional["go.Figure"]:
+def _create_rolling_beta_chart(betas: pd.DataFrame, title: str = "Rolling Factor Betas", height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create rolling beta time series chart."""
     if not PLOTLY_AVAILABLE:
         return None
@@ -3373,7 +3381,7 @@ def _generate_brinson_insights(
 def _create_risk_budget_gauge(
     utilization: float,
     title: str = "Risk Budget",
-    height: int = 200,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a risk budget utilization gauge."""
     if not PLOTLY_AVAILABLE:
@@ -3433,7 +3441,7 @@ def _create_var_chart(
     returns: pd.Series,
     var_95: float,
     var_99: float,
-    height: int = 350,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a return distribution with VaR lines."""
     if not PLOTLY_AVAILABLE:
@@ -3500,7 +3508,7 @@ def _create_var_chart(
 
 def _create_drawdown_context_chart(
     returns: pd.Series,
-    height: int = 350,
+    height: Optional[int] = None,
 ) -> Optional["go.Figure"]:
     """Create a drawdown chart with historical context."""
     if not PLOTLY_AVAILABLE or returns is None or len(returns) < 20:
@@ -3639,7 +3647,7 @@ def render_pm_risk_dashboard(data: DashboardData):
                 height=220,
             )
             if fig:
-                st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         else:
             st.metric(
                 "Risk Budget Used",
@@ -3655,7 +3663,7 @@ def render_pm_risk_dashboard(data: DashboardData):
                 height=220,
             )
             if fig:
-                st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         else:
             st.metric("Volatility Budget", f"{risk_budget['vol_utilization']:.0%}")
     
@@ -3667,7 +3675,7 @@ def render_pm_risk_dashboard(data: DashboardData):
                 height=220,
             )
             if fig:
-                st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         else:
             st.metric("Drawdown Budget", f"{risk_budget['dd_utilization']:.0%}")
     
@@ -3700,7 +3708,7 @@ def render_pm_risk_dashboard(data: DashboardData):
                 height=350,
             )
             if fig:
-                st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         else:
             st.info("VaR chart requires Plotly")
     
@@ -3745,7 +3753,7 @@ def render_pm_risk_dashboard(data: DashboardData):
         if PLOTLY_AVAILABLE:
             fig = _create_drawdown_context_chart(ret_series, height=350)
             if fig:
-                st.plotly_chart(fig, width='stretch')
+                            st.plotly_chart(fig)
         else:
             # Fallback
             dd_series = (equity / equity.cummax() - 1) * 100

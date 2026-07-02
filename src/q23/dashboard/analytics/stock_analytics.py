@@ -839,20 +839,29 @@ def compute_stock_correlation_matrix(
     # Lag weights (vectorized for all stocks at once)
     w_lag = stock_weights.shift(1).fillna(0.0)
     
-    # Vectorized stock returns computation for all stocks
+    # Vectorized stock returns computation for all stocks at once
     eps = 1e-12
     significant_mask = w_lag.abs() > eps
     
-    # Initialize returns DataFrame
-    stock_returns = pd.DataFrame(0.0, index=stock_weights.index, columns=valid_symbols)
+    # Vectorized division: compute returns for all symbols simultaneously
+    # Use numpy broadcasting: port_ret[:, None] broadcasts to (n_dates, n_symbols)
+    port_ret_2d = port_ret.values[:, np.newaxis]  # Shape: (n_dates, 1)
+    w_lag_values = w_lag.values  # Shape: (n_dates, n_symbols)
     
-    # Vectorized division for all stocks at once
-    for symbol in valid_symbols:
-        mask = significant_mask[symbol]
-        if mask.any():
-            stock_returns.loc[mask, symbol] = (
-                port_ret[mask] / (w_lag.loc[mask, symbol] + eps)
-            )
+    # Vectorized division with where parameter to handle division by zero
+    stock_returns_values = np.divide(
+        port_ret_2d,
+        w_lag_values + eps,
+        out=np.zeros_like(w_lag_values, dtype=float),
+        where=significant_mask.values
+    )
+    
+    # Create DataFrame from computed values
+    stock_returns = pd.DataFrame(
+        stock_returns_values,
+        index=stock_weights.index,
+        columns=valid_symbols
+    )
     
     # Clip extreme values
     stock_returns = stock_returns.clip(-0.5, 0.5)
@@ -987,3 +996,904 @@ def compute_stock_attribution_enhanced(
     attribution.update(diagnostics)
     
     return attribution
+
+
+# =============================================================================
+# Batch Stock Metrics for Treemap
+# =============================================================================
+
+def compute_batch_stock_metrics(
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    factor_vectors: Optional[pd.DataFrame] = None,
+    symbols: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Efficiently compute quick metrics for multiple stocks (for treemap tooltips).
+    
+    This function is optimized for speed when computing metrics for many stocks,
+    using vectorized operations where possible.
+    
+    Args:
+        weights: Portfolio weights (time x asset)
+        portfolio_returns: Portfolio daily returns
+        factor_vectors: Optional factor vectors with summary metrics
+        symbols: Optional list of symbols to compute (defaults to current holdings)
+        
+    Returns:
+        Dict of {symbol: metrics_dict} where metrics_dict contains:
+        - sharpe, sortino: Risk-adjusted returns
+        - var_95, max_dd: Risk metrics
+        - skewness, kurtosis: Distribution metrics
+        - ret_30d, pnl_contrib: Performance metrics
+        - days_held, ann_vol, hit_rate: Context metrics
+        - beta: Market sensitivity (if portfolio returns available)
+        - n_obs: Number of observations
+    """
+    from scipy import stats
+    
+    if weights is None or weights.empty:
+        return {}
+    
+    # Default to current holdings
+    if symbols is None:
+        w_last = weights.iloc[-1]
+        symbols = w_last[w_last.abs() > 1e-12].index.tolist()
+    
+    if not symbols:
+        return {}
+    
+    results = {}
+    
+    for symbol in symbols:
+        if symbol not in weights.columns:
+            continue
+        
+        metrics = {}
+        w_series = weights[symbol].fillna(0.0)
+        
+        # Basic weight metrics
+        held_mask = w_series.abs() > 1e-12
+        days_held = int(held_mask.sum())
+        metrics['days_held'] = days_held
+        
+        # Get stock returns (approximation)
+        stock_ret = compute_stock_returns_from_weights(weights, portfolio_returns, symbol)
+        
+        if stock_ret is not None and len(stock_ret) >= 20:
+            rets = stock_ret.dropna()
+            rets = rets[held_mask.reindex(rets.index, fill_value=False)]  # Only when held
+            
+            if len(rets) >= 20:
+                n_obs = len(rets)
+                metrics['n_obs'] = n_obs
+                
+                # Returns
+                ann_ret = float(rets.mean() * 252)
+                ann_vol = float(rets.std() * np.sqrt(252))
+                metrics['ann_vol'] = ann_vol
+                
+                # Sharpe
+                sharpe = ann_ret / (ann_vol + 1e-12)
+                metrics['sharpe'] = sharpe
+                
+                # Sortino
+                downside = rets[rets < 0]
+                downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else ann_vol
+                sortino = ann_ret / (downside_std + 1e-12)
+                metrics['sortino'] = sortino
+                
+                # VaR 95%
+                var_95 = float(np.percentile(rets, 5))
+                metrics['var_95'] = var_95
+                
+                # Max Drawdown
+                cum = (1 + rets).cumprod()
+                drawdown = cum / cum.cummax() - 1
+                max_dd = float(drawdown.min())
+                metrics['max_dd'] = max_dd
+                
+                # Distribution moments
+                if len(rets) >= 30:
+                    metrics['skewness'] = float(stats.skew(rets))
+                    metrics['kurtosis'] = float(stats.kurtosis(rets))
+                
+                # Hit rate (% positive days)
+                hit_rate = float((rets > 0).sum() / len(rets))
+                metrics['hit_rate'] = hit_rate
+                
+                # 30d return
+                if len(stock_ret) >= 30:
+                    ret_30d = float((1 + stock_ret.tail(30)).prod() - 1)
+                    metrics['ret_30d'] = ret_30d
+                
+                # Beta to portfolio
+                if portfolio_returns is not None and len(portfolio_returns) >= 20:
+                    aligned_port, aligned_stock = portfolio_returns.align(rets, join='inner')
+                    if len(aligned_port) >= 20:
+                        try:
+                            cov = np.cov(aligned_stock, aligned_port)[0, 1]
+                            var_port = np.var(aligned_port)
+                            if var_port > 1e-12:
+                                beta = cov / var_port
+                                metrics['beta'] = float(beta)
+                        except Exception:
+                            pass
+        
+        # P&L contribution from factor_vectors if available
+        if factor_vectors is not None and symbol in factor_vectors.index:
+            row = factor_vectors.loc[symbol]
+            pnl = row.get('total_pnl_contrib', 0.0)
+            if pnl is not None:
+                metrics['pnl_contrib'] = float(pnl)
+        
+        results[symbol] = metrics
+    
+    return results
+
+
+# =============================================================================
+# Spearman IC Analysis by Horizon
+# =============================================================================
+
+def compute_spearman_ic_by_horizon(
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    horizons: List[int] = [1, 5, 10, 21, 63],
+    min_obs: int = 50,
+) -> pd.DataFrame:
+    """
+    Compute Spearman rank correlation (IC) of weights vs forward returns.
+    
+    This measures how well the portfolio weights predict forward returns
+    at different horizons. A positive IC indicates predictive power.
+    
+    IC = Spearman ρ(weight_t, return_{t+h})
+    
+    Args:
+        weights: Portfolio weights (time x asset)
+        portfolio_returns: Portfolio daily returns (for computing stock returns)
+        horizons: List of forward horizons in days (e.g., [1, 5, 10, 21, 63])
+        min_obs: Minimum observations required
+        
+    Returns:
+        DataFrame with columns: horizon, ic_mean, ic_std, t_stat, p_value, n_obs, hit_rate
+    """
+    from scipy import stats
+    
+    if weights is None or weights.empty:
+        return pd.DataFrame()
+    
+    if portfolio_returns is None or portfolio_returns.empty:
+        return pd.DataFrame()
+    
+    results = []
+    
+    for horizon in horizons:
+        ic_values = []
+        
+        # For each date, compute cross-sectional IC
+        for date_idx in range(len(weights.index) - horizon - 1):
+            date = weights.index[date_idx]
+            future_date = weights.index[min(date_idx + horizon, len(weights.index) - 1)]
+            
+            # Get weights at date
+            w = weights.iloc[date_idx]
+            active_assets = w[w.abs() > 1e-12].index.tolist()
+            
+            if len(active_assets) < 5:  # Need enough assets for correlation
+                continue
+            
+            # Compute forward returns for active assets
+            fwd_returns = {}
+            for asset in active_assets:
+                if asset not in weights.columns:
+                    continue
+                
+                # Approximate forward return from weight changes and portfolio return
+                stock_ret = compute_stock_returns_from_weights(
+                    weights.iloc[date_idx:date_idx+horizon+2],
+                    portfolio_returns.iloc[date_idx:date_idx+horizon+2],
+                    asset
+                )
+                if stock_ret is not None and len(stock_ret) > 0:
+                    # Cumulative return over horizon
+                    fwd_returns[asset] = float((1 + stock_ret).prod() - 1)
+            
+            if len(fwd_returns) < 5:
+                continue
+            
+            # Compute Spearman correlation
+            common = list(fwd_returns.keys())
+            w_vals = w[common].values
+            r_vals = np.array([fwd_returns[a] for a in common])
+            
+            try:
+                ic, _ = stats.spearmanr(w_vals, r_vals)
+                if not np.isnan(ic):
+                    ic_values.append(ic)
+            except Exception:
+                pass
+        
+        if len(ic_values) >= min_obs:
+            ic_array = np.array(ic_values)
+            ic_mean = float(np.mean(ic_array))
+            ic_std = float(np.std(ic_array))
+            
+            # T-stat for mean IC being different from zero
+            t_stat = ic_mean / (ic_std / np.sqrt(len(ic_array)) + 1e-12)
+            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), len(ic_array) - 1))
+            
+            # Hit rate: % of times IC > 0
+            hit_rate = float((ic_array > 0).sum() / len(ic_array))
+            
+            results.append({
+                "horizon": horizon,
+                "ic_mean": ic_mean,
+                "ic_std": ic_std,
+                "t_stat": float(t_stat),
+                "p_value": float(p_value),
+                "n_obs": len(ic_array),
+                "hit_rate": hit_rate,
+            })
+    
+    return pd.DataFrame(results)
+
+
+def compute_decile_spread_analysis(
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    n_deciles: int = 10,
+    horizons: List[int] = [1, 5, 21],
+    min_assets: int = 10,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Compute decile spread analysis: top decile minus bottom decile returns.
+    
+    For each date, ranks stocks by weight and computes returns of
+    top decile vs bottom decile portfolios. The spread measures
+    whether high-weight stocks outperform low-weight stocks.
+    
+    Args:
+        weights: Portfolio weights (time x asset)
+        portfolio_returns: Portfolio daily returns
+        n_deciles: Number of buckets (default 10 for deciles)
+        horizons: List of forward horizons to analyze
+        min_assets: Minimum assets required to form deciles
+        
+    Returns:
+        Dict with:
+        - 'spread_by_horizon': DataFrame with horizon, spread_mean, spread_std, t_stat
+        - 'decile_returns': DataFrame with average return by decile for each horizon
+        - 'spread_ts': DataFrame with time series of spreads
+    """
+    from scipy import stats
+    
+    if weights is None or weights.empty:
+        return {}
+    
+    if portfolio_returns is None or portfolio_returns.empty:
+        return {}
+    
+    # Compute decile returns for each horizon
+    decile_returns_by_horizon = {}
+    spread_ts_by_horizon = {}
+    
+    for horizon in horizons:
+        decile_returns = {d: [] for d in range(1, n_deciles + 1)}
+        spread_values = []
+        spread_dates = []
+        
+        for date_idx in range(len(weights.index) - horizon - 1):
+            date = weights.index[date_idx]
+            
+            # Get weights at date
+            w = weights.iloc[date_idx]
+            active = w[w.abs() > 1e-12]
+            
+            if len(active) < min_assets:
+                continue
+            
+            # Compute forward returns for active assets
+            fwd_returns = {}
+            for asset in active.index:
+                stock_ret = compute_stock_returns_from_weights(
+                    weights.iloc[date_idx:date_idx+horizon+2],
+                    portfolio_returns.iloc[date_idx:date_idx+horizon+2],
+                    asset
+                )
+                if stock_ret is not None and len(stock_ret) > 0:
+                    fwd_returns[asset] = float((1 + stock_ret).prod() - 1)
+            
+            if len(fwd_returns) < min_assets:
+                continue
+            
+            # Rank by absolute weight (higher = more conviction)
+            assets_sorted = sorted(fwd_returns.keys(), key=lambda x: abs(w[x]), reverse=True)
+            n_per_decile = max(1, len(assets_sorted) // n_deciles)
+            
+            # Assign to deciles
+            for i, asset in enumerate(assets_sorted):
+                decile = min(n_deciles, i // n_per_decile + 1)
+                decile_returns[decile].append(fwd_returns[asset])
+            
+            # Top vs bottom spread
+            top_decile_assets = assets_sorted[:n_per_decile]
+            bottom_decile_assets = assets_sorted[-n_per_decile:]
+            
+            top_ret = np.mean([fwd_returns[a] for a in top_decile_assets])
+            bottom_ret = np.mean([fwd_returns[a] for a in bottom_decile_assets])
+            spread = top_ret - bottom_ret
+            
+            spread_values.append(spread)
+            spread_dates.append(date)
+        
+        # Store decile returns
+        decile_returns_by_horizon[horizon] = {
+            d: np.mean(rets) if rets else 0.0 
+            for d, rets in decile_returns.items()
+        }
+        
+        # Store spread time series
+        if spread_values:
+            spread_ts_by_horizon[horizon] = pd.Series(spread_values, index=spread_dates)
+    
+    # Build summary DataFrame
+    spread_summary = []
+    for horizon in horizons:
+        if horizon in spread_ts_by_horizon:
+            ts = spread_ts_by_horizon[horizon]
+            if len(ts) >= 20:
+                mean_spread = float(ts.mean())
+                std_spread = float(ts.std())
+                t_stat = mean_spread / (std_spread / np.sqrt(len(ts)) + 1e-12)
+                p_value = 2 * (1 - stats.t.cdf(abs(t_stat), len(ts) - 1))
+                
+                spread_summary.append({
+                    "horizon": horizon,
+                    "spread_mean": mean_spread,
+                    "spread_std": std_spread,
+                    "t_stat": float(t_stat),
+                    "p_value": float(p_value),
+                    "n_obs": len(ts),
+                    "hit_rate": float((ts > 0).sum() / len(ts)),
+                })
+    
+    # Build decile returns DataFrame
+    decile_df_rows = []
+    for decile in range(1, n_deciles + 1):
+        row = {"decile": decile}
+        for horizon in horizons:
+            row[f"ret_t{horizon}"] = decile_returns_by_horizon.get(horizon, {}).get(decile, 0.0)
+        decile_df_rows.append(row)
+    
+    # Build spread time series DataFrame
+    spread_ts_df = pd.DataFrame(spread_ts_by_horizon)
+    if not spread_ts_df.empty:
+        spread_ts_df.columns = [f"spread_t{h}" for h in spread_ts_df.columns]
+    
+    return {
+        "spread_by_horizon": pd.DataFrame(spread_summary),
+        "decile_returns": pd.DataFrame(decile_df_rows),
+        "spread_ts": spread_ts_df,
+    }
+
+
+# =============================================================================
+# Stock vs Portfolio Comparison
+# =============================================================================
+
+def compute_stock_vs_portfolio_returns(
+    symbols: List[str],
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+) -> pd.DataFrame:
+    """
+    Compute cumulative returns for stocks and portfolio for comparison.
+    
+    Args:
+        symbols: List of stock symbols to compare
+        weights: Portfolio weights (time x asset)
+        portfolio_returns: Portfolio daily returns
+        
+    Returns:
+        DataFrame with cumulative returns indexed by date,
+        columns = [symbol1, symbol2, ..., 'Portfolio']
+    """
+    if not symbols:
+        return pd.DataFrame()
+    
+    returns_dict = {}
+    
+    # Add portfolio returns
+    if portfolio_returns is not None and not portfolio_returns.empty:
+        returns_dict["Portfolio"] = portfolio_returns
+    
+    # Add stock returns
+    for symbol in symbols:
+        stock_ret = compute_stock_returns_from_weights(weights, portfolio_returns, symbol)
+        if stock_ret is not None and len(stock_ret) > 0:
+            returns_dict[symbol] = stock_ret
+    
+    if not returns_dict:
+        return pd.DataFrame()
+    
+    # Align all returns
+    returns_df = pd.DataFrame(returns_dict).dropna()
+    
+    # Compute cumulative returns
+    cum_returns = (1 + returns_df).cumprod() - 1
+    
+    return cum_returns
+
+
+def compute_rolling_stock_correlation(
+    symbols: List[str],
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    window: int = 63,
+) -> pd.DataFrame:
+    """
+    Compute rolling correlation between stocks and portfolio.
+    
+    Args:
+        symbols: List of stock symbols
+        weights: Portfolio weights
+        portfolio_returns: Portfolio daily returns
+        window: Rolling window in days
+        
+    Returns:
+        DataFrame with rolling correlations (stock vs portfolio)
+    """
+    if not symbols:
+        return pd.DataFrame()
+    
+    if portfolio_returns is None or portfolio_returns.empty:
+        return pd.DataFrame()
+    
+    rolling_corrs = {}
+    
+    for symbol in symbols:
+        stock_ret = compute_stock_returns_from_weights(weights, portfolio_returns, symbol)
+        if stock_ret is not None and len(stock_ret) >= window:
+            aligned_stock, aligned_port = stock_ret.align(portfolio_returns, join='inner')
+            if len(aligned_stock) >= window:
+                rolling_corrs[f"{symbol} vs Portfolio"] = aligned_stock.rolling(window).corr(aligned_port)
+    
+    return pd.DataFrame(rolling_corrs).dropna(how='all')
+
+
+def compute_rolling_stock_sharpe(
+    symbols: List[str],
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    window: int = 63,
+) -> pd.DataFrame:
+    """
+    Compute rolling Sharpe ratios for stocks and portfolio.
+    
+    Args:
+        symbols: List of stock symbols
+        weights: Portfolio weights
+        portfolio_returns: Portfolio daily returns
+        window: Rolling window in days
+        
+    Returns:
+        DataFrame with rolling Sharpe ratios
+    """
+    if not symbols:
+        return pd.DataFrame()
+    
+    rolling_sharpe = {}
+    
+    # Portfolio Sharpe
+    if portfolio_returns is not None and len(portfolio_returns) >= window:
+        rolling_mean = portfolio_returns.rolling(window).mean()
+        rolling_std = portfolio_returns.rolling(window).std()
+        rolling_sharpe["Portfolio"] = (rolling_mean * 252) / (rolling_std * np.sqrt(252) + 1e-8)
+    
+    # Stock Sharpe ratios
+    for symbol in symbols:
+        stock_ret = compute_stock_returns_from_weights(weights, portfolio_returns, symbol)
+        if stock_ret is not None and len(stock_ret) >= window:
+            rolling_mean = stock_ret.rolling(window).mean()
+            rolling_std = stock_ret.rolling(window).std()
+            rolling_sharpe[symbol] = (rolling_mean * 252) / (rolling_std * np.sqrt(252) + 1e-8)
+    
+    return pd.DataFrame(rolling_sharpe).dropna(how='all')
+
+
+def compute_stock_portfolio_beta(
+    symbols: List[str],
+    weights: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    window: int = 63,
+) -> pd.DataFrame:
+    """
+    Compute rolling beta of stocks to portfolio.
+    
+    Args:
+        symbols: List of stock symbols
+        weights: Portfolio weights
+        portfolio_returns: Portfolio daily returns
+        window: Rolling window in days
+        
+    Returns:
+        DataFrame with rolling beta values
+    """
+    if not symbols:
+        return pd.DataFrame()
+    
+    if portfolio_returns is None or portfolio_returns.empty:
+        return pd.DataFrame()
+    
+    rolling_betas = {}
+    
+    for symbol in symbols:
+        stock_ret = compute_stock_returns_from_weights(weights, portfolio_returns, symbol)
+        if stock_ret is not None and len(stock_ret) >= window:
+            aligned_stock, aligned_port = stock_ret.align(portfolio_returns, join='inner')
+            
+            if len(aligned_stock) >= window:
+                # Rolling beta = rolling_cov / rolling_var
+                rolling_cov = aligned_stock.rolling(window).cov(aligned_port)
+                rolling_var = aligned_port.rolling(window).var()
+                rolling_betas[symbol] = rolling_cov / (rolling_var + 1e-12)
+    
+    return pd.DataFrame(rolling_betas).dropna(how='all')
+
+
+# =============================================================================
+# Plotly Charts for Stock vs Portfolio Comparison
+# =============================================================================
+
+# Check for Plotly availability
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
+
+def create_stock_portfolio_equity_chart(
+    cum_returns: pd.DataFrame,
+    height: int = 400,
+) -> Optional[Any]:
+    """
+    Create multi-equity cumulative return chart comparing stocks to portfolio.
+    
+    Args:
+        cum_returns: DataFrame with cumulative returns (columns are symbol names)
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or cum_returns.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    # Color palette - portfolio gets special color
+    colors = ['#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#e91e63']
+    portfolio_color = '#f1c40f'  # Gold for portfolio
+    
+    for i, col in enumerate(cum_returns.columns):
+        if col == "Portfolio":
+            color = portfolio_color
+            line_width = 3
+            dash = None
+        else:
+            color = colors[i % len(colors)]
+            line_width = 2
+            dash = None
+        
+        final_ret = cum_returns[col].iloc[-1] if len(cum_returns) > 0 else 0
+        
+        fig.add_trace(go.Scatter(
+            x=cum_returns.index,
+            y=cum_returns[col],
+            mode='lines',
+            name=col,
+            line={'color': color, 'width': line_width, 'dash': dash},
+            hovertemplate=f'{col}<br>%{{y:.2%}}<extra></extra>',
+        ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    
+    fig.update_layout(
+        title={'text': 'Cumulative Returns: Stocks vs Portfolio', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 60, 'r': 40, 't': 60, 'b': 40},
+        xaxis={'gridcolor': '#3A3A3A'},
+        yaxis={'gridcolor': '#3A3A3A', 'tickformat': '.0%'},
+        hovermode='x unified',
+        hoverlabel={'bgcolor': '#1e1e1e', 'bordercolor': '#444', 'font': {'size': 11, 'color': '#ecf0f1'}},
+        legend={'orientation': 'h', 'y': -0.15, 'x': 0.5, 'xanchor': 'center'},
+    )
+    
+    return fig
+
+
+def create_rolling_stock_correlation_chart(
+    rolling_corr: pd.DataFrame,
+    height: int = 350,
+) -> Optional[Any]:
+    """
+    Create rolling correlation chart between stocks and portfolio.
+    
+    Args:
+        rolling_corr: DataFrame with rolling correlation series
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or rolling_corr.empty:
+        return None
+    
+    colors = ['#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c']
+    
+    fig = go.Figure()
+    
+    for i, col in enumerate(rolling_corr.columns):
+        color = colors[i % len(colors)]
+        fig.add_trace(go.Scatter(
+            x=rolling_corr.index,
+            y=rolling_corr[col],
+            mode='lines',
+            name=col,
+            line={'color': color, 'width': 1.5},
+            hovertemplate='%{y:.3f}<extra></extra>',
+        ))
+    
+    # Reference lines
+    fig.add_hline(y=1.0, line_dash="dot", line_color="rgba(46, 204, 113, 0.4)")
+    fig.add_hline(y=0.0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    fig.add_hline(y=-1.0, line_dash="dot", line_color="rgba(231, 76, 60, 0.4)")
+    
+    fig.update_layout(
+        title={'text': 'Rolling Correlation with Portfolio', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 50, 'r': 30, 't': 50, 'b': 40},
+        xaxis={'gridcolor': '#3A3A3A'},
+        yaxis={'gridcolor': '#3A3A3A', 'range': [-1.1, 1.1], 'tickformat': '.2f'},
+        hovermode='x unified',
+        hoverlabel={'bgcolor': '#1e1e1e', 'bordercolor': '#444', 'font': {'size': 11, 'color': '#ecf0f1'}},
+        legend={'orientation': 'h', 'y': -0.15, 'x': 0.5, 'xanchor': 'center'},
+    )
+    
+    return fig
+
+
+def create_rolling_stock_sharpe_chart(
+    rolling_sharpe: pd.DataFrame,
+    height: int = 350,
+) -> Optional[Any]:
+    """
+    Create rolling Sharpe ratio chart for stocks and portfolio.
+    
+    Args:
+        rolling_sharpe: DataFrame with rolling Sharpe series
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or rolling_sharpe.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    colors = ['#f1c40f', '#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#f39c12']  # Gold for portfolio first
+    
+    for i, col in enumerate(rolling_sharpe.columns):
+        if col == "Portfolio":
+            color = '#f1c40f'  # Gold
+            line_width = 3
+        else:
+            color = colors[(i + 1) % len(colors)]
+            line_width = 2
+        
+        fig.add_trace(go.Scatter(
+            x=rolling_sharpe.index,
+            y=rolling_sharpe[col],
+            mode='lines',
+            name=col,
+            line={'color': color, 'width': line_width},
+            hovertemplate='%{y:.2f}<extra></extra>',
+        ))
+    
+    # Reference lines for Sharpe quality
+    fig.add_hline(y=2.0, line_dash="dot", line_color="rgba(46, 204, 113, 0.3)",
+                  annotation_text="Excellent", annotation_position="right")
+    fig.add_hline(y=1.0, line_dash="dot", line_color="rgba(52, 152, 219, 0.3)",
+                  annotation_text="Good", annotation_position="right")
+    fig.add_hline(y=0.0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    
+    fig.update_layout(
+        title={'text': 'Rolling Sharpe Ratio', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 50, 'r': 60, 't': 50, 'b': 40},
+        xaxis={'gridcolor': '#3A3A3A'},
+        yaxis={'gridcolor': '#3A3A3A', 'tickformat': '.1f', 'title': 'Sharpe (Ann.)'},
+        hovermode='x unified',
+        hoverlabel={'bgcolor': '#1e1e1e', 'bordercolor': '#444', 'font': {'size': 11, 'color': '#ecf0f1'}},
+        legend={'orientation': 'h', 'y': -0.15, 'x': 0.5, 'xanchor': 'center'},
+    )
+    
+    return fig
+
+
+def create_ic_by_horizon_chart(
+    ic_df: pd.DataFrame,
+    height: int = 350,
+) -> Optional[Any]:
+    """
+    Create bar chart showing Spearman IC by horizon.
+    
+    Args:
+        ic_df: DataFrame with columns: horizon, ic_mean, ic_std, t_stat
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or ic_df.empty:
+        return None
+    
+    # Color bars based on t-stat significance - vectorized operation
+    t_stats = ic_df.get('t_stat', pd.Series(0, index=ic_df.index))
+    ic_means = ic_df.get('ic_mean', pd.Series(0, index=ic_df.index))
+    significant = t_stats.abs() >= 2.0
+    colors = [
+        '#2ecc71' if (sig and ic_mean > 0) else '#e74c3c' if sig else '#95a5a6'
+        for sig, ic_mean in zip(significant, ic_means)
+    ]
+    
+    # Fallback for any remaining rows (shouldn't happen, but safe)
+    if len(colors) < len(ic_df):
+        for _ in range(len(ic_df) - len(colors)):
+            colors.append('#95a5a6')
+            colors.append('#7f8c8d')  # Gray for non-significant
+    
+    fig = go.Figure()
+    
+    # Add bars for IC mean
+    fig.add_trace(go.Bar(
+        x=[f"T+{h}" for h in ic_df['horizon']],
+        y=ic_df['ic_mean'],
+        marker_color=colors,
+        error_y={'type': 'data', 'array': ic_df['ic_std'], 'color': '#ecf0f1', 'thickness': 1},
+        hovertemplate='<b>%{x}</b><br>IC: %{y:.4f}<br>±%{error_y.array:.4f}<extra></extra>',
+    ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    
+    fig.update_layout(
+        title={'text': 'Spearman IC by Horizon', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 50, 'r': 30, 't': 50, 'b': 60},
+        xaxis={'title': 'Forward Horizon', 'gridcolor': '#3A3A3A'},
+        yaxis={'title': 'IC (ρ)', 'gridcolor': '#3A3A3A', 'tickformat': '.3f'},
+        showlegend=False,
+    )
+    
+    return fig
+
+
+def create_decile_spread_chart(
+    decile_returns: pd.DataFrame,
+    horizons: List[int] = [1, 5, 21],
+    height: int = 350,
+) -> Optional[Any]:
+    """
+    Create bar chart showing returns by decile.
+    
+    Args:
+        decile_returns: DataFrame with columns: decile, ret_t1, ret_t5, ret_t21
+        horizons: Horizons to show
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or decile_returns.empty:
+        return None
+    
+    colors = ['#3498db', '#2ecc71', '#f39c12']
+    
+    fig = go.Figure()
+    
+    for i, h in enumerate(horizons):
+        col = f"ret_t{h}"
+        if col not in decile_returns.columns:
+            continue
+        
+        fig.add_trace(go.Bar(
+            x=decile_returns['decile'],
+            y=decile_returns[col],
+            name=f"T+{h}",
+            marker_color=colors[i % len(colors)],
+            hovertemplate='<b>Decile %{x}</b><br>Return: %{y:.3%}<extra></extra>',
+        ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    
+    fig.update_layout(
+        title={'text': 'Returns by Weight Decile', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 50, 'r': 30, 't': 50, 'b': 60},
+        xaxis={'title': 'Weight Decile (1=Highest)', 'gridcolor': '#3A3A3A', 'dtick': 1},
+        yaxis={'title': 'Average Forward Return', 'gridcolor': '#3A3A3A', 'tickformat': '.2%'},
+        barmode='group',
+        legend={'orientation': 'h', 'y': -0.2, 'x': 0.5, 'xanchor': 'center'},
+    )
+    
+    return fig
+
+
+def create_decile_spread_ts_chart(
+    spread_ts: pd.DataFrame,
+    height: int = 300,
+) -> Optional[Any]:
+    """
+    Create time series chart of top-bottom decile spread.
+    
+    Args:
+        spread_ts: DataFrame with columns like spread_t1, spread_t5, spread_t21
+        height: Chart height in pixels
+        
+    Returns:
+        Plotly figure or None
+    """
+    if not PLOTLY_AVAILABLE or spread_ts.empty:
+        return None
+    
+    colors = ['#3498db', '#2ecc71', '#f39c12']
+    
+    fig = go.Figure()
+    
+    for i, col in enumerate(spread_ts.columns):
+        horizon = col.replace('spread_t', '')
+        fig.add_trace(go.Scatter(
+            x=spread_ts.index,
+            y=spread_ts[col],
+            mode='lines',
+            name=f"T+{horizon}",
+            line={'color': colors[i % len(colors)], 'width': 1.5},
+            hovertemplate='%{y:.3%}<extra></extra>',
+        ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)")
+    
+    fig.update_layout(
+        title={'text': 'Top-Bottom Decile Spread Over Time', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#262730',
+        font={'color': '#ecf0f1'},
+        height=height,
+        margin={'l': 50, 'r': 30, 't': 50, 'b': 40},
+        xaxis={'gridcolor': '#3A3A3A'},
+        yaxis={'title': 'Spread', 'gridcolor': '#3A3A3A', 'tickformat': '.2%'},
+        hovermode='x unified',
+        hoverlabel={'bgcolor': '#1e1e1e', 'bordercolor': '#444', 'font': {'size': 11, 'color': '#ecf0f1'}},
+        legend={'orientation': 'h', 'y': -0.2, 'x': 0.5, 'xanchor': 'center'},
+    )
+    
+    return fig

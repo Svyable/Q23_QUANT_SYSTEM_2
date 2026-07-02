@@ -34,7 +34,7 @@ from q23.dashboard.admin_settings import (
     save_tc_config,
 )
 from q23.dashboard.core import discover_available_strategies, get_strategy_display_name
-from q23.shared.config import TransactionCostConfig, TransactionCostScheme
+from q23.shared.config import TransactionCostConfig, TransactionCostScheme, cfg
 
 
 def _now_iso() -> str:
@@ -97,14 +97,22 @@ def _render_settings_tab() -> None:
         )
         st.session_state.admin_show_elite_overlay = bool(show_elite)
 
-        preset_options = ["2025", "2024 Full", "2024 + 2025", "All Time"]
+        # Build preset options dynamically (matching sidebar options)
+        today = datetime.now()
+        current_year = today.year
+        
+        preset_options_admin = []
+        if current_year >= 2026:
+            preset_options_admin.append("2026")
+        preset_options_admin.extend(["2025", "2024", "2023", "2022", "2021", "2020"])
+        preset_options_admin.extend(["All"])
+        
+        current_admin_preset = st.session_state.get("admin_default_date_preset", "2025")
         default_preset = st.selectbox(
             "Default date preset",
-            options=preset_options,
-            index=preset_options.index(st.session_state.get("admin_default_date_preset", "2025"))
-            if st.session_state.get("admin_default_date_preset", "2025") in preset_options
-            else 0,
-            help="Used when the session first initializes date preset.",
+            options=preset_options_admin,
+            index=preset_options_admin.index(current_admin_preset) if current_admin_preset in preset_options_admin else 0,
+            help="Default date preset when the session first initializes. Full years show only that calendar year. YTD shows year-to-date up to today.",
         )
         st.session_state.admin_default_date_preset = default_preset
 
@@ -297,6 +305,116 @@ def _build_environment_report() -> str:
         lines.append("⚠️ One or more key imports failed. See above.")
 
     return "\n".join(lines) + "\n"
+
+
+def _render_marketstack_tab() -> None:
+    """Render Marketstack API status and telemetry."""
+    st.subheader("📡 Marketstack API Status")
+    st.caption("Real-time data fetching status and telemetry.")
+    
+    try:
+        from q23.strategy.marketstack_telemetry import get_telemetry_manager
+        tel_mgr = get_telemetry_manager()
+        tel = tel_mgr.get_telemetry()
+        
+        # Status overview
+        col1, col2, col3, col4 = st.columns(4)
+        
+        status_color = {
+            "enabled": "🟢",
+            "disabled": "🔴",
+            "error": "🔴",
+            "rate_limited": "🟡",
+        }
+        status_icon = status_color.get(tel.status.value, "⚪")
+        
+        col1.metric("Status", f"{status_icon} {tel.status.value.upper()}")
+        col2.metric("API Key", "✅ SET" if tel.api_key_set else "❌ NOT SET")
+        col3.metric("Total Fetches", tel.total_fetches)
+        col4.metric("Success Rate", f"{tel.get_success_rate():.1f}%")
+        
+        # Configuration
+        st.markdown("#### Configuration")
+        config_col1, config_col2 = st.columns(2)
+        
+        with config_col1:
+            st.code(
+                "\n".join([
+                    f"Base URL: {tel.config.get('base_url', 'N/A')}",
+                    f"Rate Limit Delay: {tel.config.get('rate_limit_delay', 'N/A')}s",
+                    f"Default Lookback: {tel.config.get('default_lookback_days', 'N/A')} days",
+                ]),
+                language="text",
+            )
+        
+        with config_col2:
+            st.code(
+                "\n".join([
+                    f"Force Live Data: {tel.config.get('force_live_data', False)}",
+                    f"Pre-Market Cutoff: {tel.config.get('pre_market_cutoff_hour', 'N/A')}:00 ET",
+                    f"Post-Market Cutoff: {tel.config.get('post_market_cutoff_hour', 'N/A')}:00 ET",
+                ]),
+                language="text",
+            )
+        
+        # Statistics
+        st.markdown("#### Statistics")
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1.metric("Successful Fetches", tel.successful_fetches)
+        stat_col2.metric("Failed Fetches", tel.failed_fetches)
+        stat_col3.metric("Total Rows Fetched", f"{tel.total_rows_fetched:,}")
+        
+        # Last fetch details
+        if tel.last_fetch:
+            st.markdown("#### Last Fetch")
+            last_fetch_time = datetime.fromtimestamp(tel.last_fetch.timestamp, tz=timezone.utc)
+            last_fetch_col1, last_fetch_col2, last_fetch_col3 = st.columns(3)
+            last_fetch_col1.metric("Time", last_fetch_time.strftime("%Y-%m-%d %H:%M:%S UTC"))
+            last_fetch_col2.metric("Date Fetched", tel.last_fetch.fetched_date or "N/A")
+            last_fetch_col3.metric("Rows", tel.last_fetch.rows_fetched)
+            
+            result_icon = "✅" if tel.last_fetch.result.value == "success" else "❌"
+            st.info(
+                f"{result_icon} **Result**: {tel.last_fetch.result.value.upper()} | "
+                f"**Symbols**: {tel.last_fetch.symbols_count} | "
+                f"**Duration**: {tel.last_fetch.duration_ms:.0f}ms | "
+                f"**Strategy**: {tel.last_fetch.strategy_id or 'N/A'}"
+            )
+            if tel.last_fetch.error_message:
+                st.error(f"Error: {tel.last_fetch.error_message}")
+        else:
+            st.info("No fetch history yet.")
+        
+        # Recent activity
+        if tel.fetch_history:
+            st.markdown("#### Recent Activity (Last 10)")
+            activity_data = []
+            for record in tel.fetch_history[-10:]:
+                fetch_time = datetime.fromtimestamp(record.timestamp, tz=timezone.utc)
+                activity_data.append({
+                    "Time": fetch_time.strftime("%H:%M:%S"),
+                    "Date": record.fetched_date or f"{record.date_from}→{record.date_to}" or "N/A",
+                    "Result": f"{'✅' if record.result.value == 'success' else '❌'} {record.result.value.upper()}",
+                    "Symbols": record.symbols_count,
+                    "Rows": record.rows_fetched,
+                    "Duration (ms)": f"{record.duration_ms:.0f}",
+                    "Strategy": record.strategy_id or "—",
+                })
+            st.dataframe(activity_data, use_container_width=True, hide_index=True)
+        
+        # Export telemetry
+        st.divider()
+        tel_json = json.dumps(tel_mgr.get_telemetry().to_dict(), indent=2, default=str)
+        st.download_button(
+            "Download Telemetry JSON",
+            data=tel_json.encode("utf-8"),
+            file_name=f"marketstack_telemetry_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+        )
+        
+    except Exception as e:
+        st.error(f"Error loading Marketstack telemetry: {e}")
+        st.code(str(e), language="text")
 
 
 def _render_environment_diagnostics() -> None:
@@ -592,12 +710,21 @@ def _render_artifact_health(sidebar_state: SidebarState) -> None:
         return
 
     rows = []
+    meta_data = None
     for key, p in paths.items():
         exists = p.exists()
         if exists and p.is_file():
             stat = p.stat()
             size_kb = round(stat.st_size / 1024, 1)
             modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+            
+            # Load meta.json to check Marketstack info
+            if key == "meta" and p.suffix == ".json":
+                try:
+                    with open(p, 'r') as f:
+                        meta_data = json.load(f)
+                except Exception:
+                    pass
         else:
             size_kb = "—"
             modified = "—"
@@ -611,7 +738,30 @@ def _render_artifact_health(sidebar_state: SidebarState) -> None:
             }
         )
 
-    st.dataframe(rows, width='stretch', hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
+    
+    # Show Marketstack info from meta.json if available
+    if meta_data:
+        marketstack_info = meta_data.get("data_source", {}).get("marketstack", {})
+        if marketstack_info:
+            st.markdown("#### 📡 Marketstack Data Status")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Enabled", "✅ YES" if marketstack_info.get("enabled") else "❌ NO")
+            col2.metric("Used", "✅ YES" if marketstack_info.get("used") else "❌ NO")
+            col3.metric("Fetched Date", marketstack_info.get("fetched_date") or "—")
+            
+            latest_date = meta_data.get("data_source", {}).get("latest_date")
+            date_range = meta_data.get("date_range", [])
+            if latest_date and date_range:
+                st.info(
+                    f"**Latest data date**: {latest_date} | "
+                    f"**Date range in outputs**: {date_range[0]} → {date_range[1]}"
+                )
+                if latest_date != date_range[1]:
+                    st.warning(
+                        f"⚠️ Latest data date ({latest_date}) differs from end date in outputs ({date_range[1]}). "
+                        f"This may indicate Marketstack data wasn't included in this run."
+                    )
 
 
 def _render_export_tab(data: DashboardData, sidebar_state: SidebarState) -> None:
@@ -699,4 +849,7 @@ def render_admin_panel(
 
     with st.expander("⚙️ Settings / feature flags", expanded=True):
         _render_settings_tab()
+    
+    with st.expander("📡 Marketstack API", expanded=True):
+        _render_marketstack_tab()
 

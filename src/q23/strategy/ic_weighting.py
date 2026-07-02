@@ -214,7 +214,8 @@ class CorrelationAwareICWeighting(DynamicICWeighting):
 
         def _penalty(arr: np.ndarray) -> np.ndarray:
             # arr shape: (factor, asset)
-            if arr.shape[1] < 2:
+            if arr.shape[1] < 2 or arr.shape[0] < 2:
+                # Not enough assets or factors for meaningful correlation
                 return np.ones(arr.shape[0], dtype=float)
             # Transpose to (asset, factor) for correlation matrix
             corr = safe_corrcoef(arr.T)

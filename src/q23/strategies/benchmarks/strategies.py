@@ -23,6 +23,7 @@ from q23.strategies.benchmarks.config import benchmark_config, INDEX_DISPLAY_NAM
 from q23.strategy.data_loader import load_market_data
 from q23.strategy.engine import _compute_portfolio_diag
 from q23.strategy.benchmark_data import get_exchange_filtered_assets
+from q23.shared import config as global_config
 
 
 def _create_empty_factor_arrays(
@@ -115,6 +116,7 @@ class BaseBenchmarkStrategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = False,  # Benchmarks typically don't write outputs
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -127,6 +129,10 @@ class BaseBenchmarkStrategy(StrategyBase):
             max_date=max_date,
             exchanges=[self.exchange],
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
         
         # Compute benchmark weights and returns
@@ -194,6 +200,7 @@ class BaseBenchmarkStrategy(StrategyBase):
             "exchange": self.exchange,
             "weighting": self.weighting,
             "is_benchmark": True,
+            "force_live_data": force_live_data,
         }
         
         # Write outputs if requested
@@ -345,6 +352,7 @@ class BaseIndexBenchmarkStrategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = False,  # Benchmarks typically don't write outputs
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -406,6 +414,7 @@ class BaseIndexBenchmarkStrategy(StrategyBase):
             "is_benchmark": True,
             "is_index_benchmark": True,
             "n_constituents": len(bundle.asset_ids),
+            "force_live_data": force_live_data,
         }
         
         # Write outputs if requested

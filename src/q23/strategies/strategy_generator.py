@@ -304,6 +304,7 @@ class {class_name}Strategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -318,6 +319,7 @@ class {class_name}Strategy(StrategyBase):
         from q23.strategy.factors import FactorLibrary, FactorParams
         from q23.strategy.ic_weighting import DynamicICWeighting, ICWeightingParams
         from q23.strategy.portfolio import PortfolioConstructor, PortfolioParams
+        from q23.shared import config as global_config
 
         cfg = {name}_config
         use_min_date = min_date or cfg.MIN_DATE
@@ -328,6 +330,10 @@ class {class_name}Strategy(StrategyBase):
             max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

@@ -34,6 +34,7 @@ from q23.strategies.ou_v1.config import (
     OU_NOVEL_FACTORS,
 )
 from q23.strategy.outputs import OutputWriter
+from q23.shared import config as global_config
 
 
 @StrategyRegistry.register
@@ -98,6 +99,7 @@ class OUv1Strategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         """Execute the OUv1 strategy."""
         if xr is None:
@@ -124,6 +126,10 @@ class OUv1Strategy(StrategyBase):
             max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

@@ -1,21 +1,5 @@
 """
 q23.strategy.factors
-
-Enhanced factor library (32+ factors) with SOTA architecture for:
-- Consistent cross-strategy factor computation
-- PM-configurable windows via dashboard/What-If
-- Clear factor metadata and categorization
-- Introspectable parameters for UI generation
-
-Design:
-- Input: MarketDataBundle-like or xr.Dataset with variables: close, high, low, vol
-- Output: F (factor, time, asset) cross-sectionally z-scored (robust or standard)
-
-Key Features:
-- Factor registry with metadata (description, category, configurable windows)
-- Window scaling system for quick regime-based parameter adjustment
-- Dashboard-friendly parameter introspection
-- All outputs finite-filled with safety clipping
 """
 
 from __future__ import annotations
@@ -32,7 +16,7 @@ try:
 except Exception:  # pragma: no cover
     xr = None  # type: ignore
 
-from q23.shared.math_utils import safe_zscore
+from q23.shared.math_utils import safe_zscore, safe_corrcoef
 
 
 def _require_xr() -> None:
@@ -833,6 +817,15 @@ class FactorWindowConfig:
     IMPACT_WIN: int = 42      # Price impact estimation window
     INVENTORY_DECAY: float = 0.95  # Decay for inventory proxy
 
+    # Neural Alpha / behavioral-microstructure windows
+    EFFICIENCY_WIN: int = 21      # Kaufman ER window
+    ATTENTION_WIN: int = 10       # Attention smoothing window
+    DISPOSITION_WIN: int = 63     # Disposition effect smoothing
+    SKEW_WIN: int = 63            # Skewness window
+    KURT_WIN: int = 63            # Kurtosis window
+    VOV_WIN: int = 21             # Vol-of-vol base window
+    PERSISTENCE_WIN: int = 42     # Momentum persistence (autocorr) window
+
     def scale(self, factor: float, min_window: int = 5) -> "FactorWindowConfig":
         """
         Scale all windows by a factor.
@@ -881,6 +874,14 @@ class FactorWindowConfig:
             SPREAD_EST_WIN=max(min_window, int(self.SPREAD_EST_WIN * factor)),
             IMPACT_WIN=max(min_window, int(self.IMPACT_WIN * factor)),
             INVENTORY_DECAY=self.INVENTORY_DECAY,  # Don't scale
+            # Neural windows - scale proportionally
+            EFFICIENCY_WIN=max(min_window, int(self.EFFICIENCY_WIN * factor)),
+            ATTENTION_WIN=max(3, int(self.ATTENTION_WIN * factor)),
+            DISPOSITION_WIN=max(21, int(self.DISPOSITION_WIN * factor)),
+            SKEW_WIN=max(21, int(self.SKEW_WIN * factor)),
+            KURT_WIN=max(21, int(self.KURT_WIN * factor)),
+            VOV_WIN=max(min_window, int(self.VOV_WIN * factor)),
+            PERSISTENCE_WIN=max(21, int(self.PERSISTENCE_WIN * factor)),
         )
 
     def with_overrides(self, **kwargs) -> "FactorWindowConfig":
@@ -929,6 +930,14 @@ class FactorWindowConfig:
             "SPREAD_EST_WIN": self.SPREAD_EST_WIN,
             "IMPACT_WIN": self.IMPACT_WIN,
             "INVENTORY_DECAY": self.INVENTORY_DECAY,
+            # Neural windows
+            "EFFICIENCY_WIN": self.EFFICIENCY_WIN,
+            "ATTENTION_WIN": self.ATTENTION_WIN,
+            "DISPOSITION_WIN": self.DISPOSITION_WIN,
+            "SKEW_WIN": self.SKEW_WIN,
+            "KURT_WIN": self.KURT_WIN,
+            "VOV_WIN": self.VOV_WIN,
+            "PERSISTENCE_WIN": self.PERSISTENCE_WIN,
         }
 
     @classmethod
@@ -983,6 +992,14 @@ class FactorWindowConfig:
             "SPREAD_EST_WIN": {"min": 10, "max": 42, "step": 7, "default": 21, "desc": "Spread estimation window"},
             "IMPACT_WIN": {"min": 21, "max": 84, "step": 7, "default": 42, "desc": "Price impact window"},
             "INVENTORY_DECAY": {"min": 0.90, "max": 0.99, "step": 0.01, "default": 0.95, "desc": "Inventory decay factor"},
+            # Neural / behavioral-microstructure params
+            "EFFICIENCY_WIN": {"min": 10, "max": 84, "step": 7, "default": 21, "desc": "Efficiency ratio window"},
+            "ATTENTION_WIN": {"min": 5, "max": 42, "step": 1, "default": 10, "desc": "Attention smoothing window"},
+            "DISPOSITION_WIN": {"min": 21, "max": 252, "step": 21, "default": 63, "desc": "Disposition effect window"},
+            "SKEW_WIN": {"min": 21, "max": 252, "step": 21, "default": 63, "desc": "Skewness window"},
+            "KURT_WIN": {"min": 21, "max": 252, "step": 21, "default": 63, "desc": "Kurtosis window"},
+            "VOV_WIN": {"min": 10, "max": 84, "step": 7, "default": 21, "desc": "Vol-of-vol base window"},
+            "PERSISTENCE_WIN": {"min": 21, "max": 126, "step": 7, "default": 42, "desc": "Momentum persistence window"},
         }
 
 
@@ -1046,6 +1063,15 @@ class FactorParams:
     IMPACT_WIN: int = 42
     INVENTORY_DECAY: float = 0.95
 
+    # Neural / behavioral-microstructure parameters
+    EFFICIENCY_WIN: int = 21
+    ATTENTION_WIN: int = 10
+    DISPOSITION_WIN: int = 63
+    SKEW_WIN: int = 63
+    KURT_WIN: int = 63
+    VOV_WIN: int = 21
+    PERSISTENCE_WIN: int = 42
+
     @classmethod
     def from_window_config(
         cls,
@@ -1104,6 +1130,14 @@ class FactorParams:
             SPREAD_EST_WIN=self.SPREAD_EST_WIN,
             IMPACT_WIN=self.IMPACT_WIN,
             INVENTORY_DECAY=self.INVENTORY_DECAY,
+            # Neural windows
+            EFFICIENCY_WIN=self.EFFICIENCY_WIN,
+            ATTENTION_WIN=self.ATTENTION_WIN,
+            DISPOSITION_WIN=self.DISPOSITION_WIN,
+            SKEW_WIN=self.SKEW_WIN,
+            KURT_WIN=self.KURT_WIN,
+            VOV_WIN=self.VOV_WIN,
+            PERSISTENCE_WIN=self.PERSISTENCE_WIN,
         )
 
     def with_scaled_windows(self, factor: float) -> "FactorParams":
@@ -1826,9 +1860,10 @@ class FactorLibrary:
         ret_q = self._factor_ret_1q()
 
         # Normalize each return by its typical magnitude
+        # Note: xarray rolling has max window of 250, so cap YEAR at 250
         w_z = ret_w / (_std(ret_w, p.QUARTER) + p.eps)
         m_z = ret_m / (_std(ret_m, p.QUARTER) + p.eps)
-        q_z = ret_q / (_std(ret_q, p.YEAR) + p.eps)
+        q_z = ret_q / (_std(ret_q, min(p.YEAR, 250)) + p.eps)
 
         return (w_z + m_z + q_z).fillna(0.0).clip(-10, 10)
 
@@ -2008,3 +2043,434 @@ class FactorLibrary:
         mom = self._factor_mtf_ic_momentum()
         universe_mean = mom.mean("asset")
         return (mom - universe_mean.broadcast_like(mom)).fillna(0.0)
+
+    # ==========================================================================
+    # Neural Alpha Novel Factors (ported into base library)
+    # ==========================================================================
+
+    def _factor_attention_momentum(self) -> "xr.DataArray":
+        """Attention-weighted momentum: volume spikes + return direction/magnitude."""
+        p = self.params
+
+        vol_avg = _sma(self.vol, p.ADV_WIN_LONG)
+        vol_ratio = self.vol / (vol_avg + p.eps)
+        vol_ratio = vol_ratio.fillna(1.0).clip(0.1, 10.0)
+
+        ret_std = _std(self.ret, p.MOM_SHORT)
+        ret_z = (self.ret / (ret_std + p.eps)).fillna(0.0).clip(-3, 3)
+
+        attention = np.sign(self.ret) * (vol_ratio - 1.0) * np.abs(ret_z)
+
+        attention_win = getattr(p, "ATTENTION_WIN", 10)
+        return _sma(attention, int(attention_win)).fillna(0.0)
+
+    def _factor_disposition_alpha(self) -> "xr.DataArray":
+        """Disposition effect proxy: prefer paper-loss names that are recovering."""
+        p = self.params
+
+        high_52w = _rolling_max(self.high, 252)
+        low_52w = _rolling_min(self.low, 252)
+        anchor_price = (high_52w + low_52w) / 2.0
+
+        unrealized_pnl = (self.close - anchor_price) / (anchor_price + p.eps)
+        disposition = -unrealized_pnl
+
+        mom_short = _sma(self.ret, p.MOM_SHORT)
+        recovery = (mom_short > 0).astype(float)
+
+        disp_win = getattr(p, "DISPOSITION_WIN", 63)
+        return _sma(disposition * (0.5 + 0.5 * recovery), int(disp_win)).fillna(0.0)
+
+    def _factor_anchoring_bias(self) -> "xr.DataArray":
+        """Anchoring proxy: proximity to 52w high + position in 52w range."""
+        p = self.params
+
+        high_52w = _rolling_max(self.high, 252)
+        low_52w = _rolling_min(self.low, 252)
+
+        high_prox = (self.close / (high_52w + p.eps)).fillna(0.5).clip(0, 1)
+        low_prox = ((self.close - low_52w) / (high_52w - low_52w + p.eps)).fillna(0.5).clip(0, 1)
+
+        return (0.6 * high_prox + 0.4 * low_prox).fillna(0.5)
+
+    def _factor_efficiency_ratio(self) -> "xr.DataArray":
+        """Kaufman Efficiency Ratio with momentum direction."""
+        p = self.params
+        eff_win = int(getattr(p, "EFFICIENCY_WIN", 21))
+
+        direction = np.abs(self.close - self.close.shift(time=eff_win))
+        abs_changes = np.abs(self.close - self.close.shift(time=1))
+        volatility = abs_changes.rolling(time=eff_win, min_periods=eff_win).sum()
+
+        er = direction / (volatility + p.eps)
+        mom_dir = np.sign(self.close - self.close.shift(time=eff_win))
+        return (er * mom_dir).fillna(0.0).clip(-1, 1)
+
+    def _factor_information_flow(self) -> "xr.DataArray":
+        """Volume-weighted price impact asymmetry."""
+        p = self.params
+
+        is_up = (self.ret > 0).astype(float)
+        is_down = (self.ret < 0).astype(float)
+
+        dollar_vol = self.vol * self.close
+        up_impact = _sma(dollar_vol * is_up * np.abs(self.ret), p.ADV_WIN_LONG)
+        down_impact = _sma(dollar_vol * is_down * np.abs(self.ret), p.ADV_WIN_LONG)
+        total = up_impact + down_impact + p.eps
+
+        info_flow = (up_impact - down_impact) / total
+        return info_flow.fillna(0.0).clip(-1, 1)
+
+    def _factor_mean_reversion_speed(self) -> "xr.DataArray":
+        """Mean reversion speed proxy: negative autocorr of trend deviations."""
+        p = self.params
+
+        trend = _ema(self.close, p.EMA_SLOW)
+        dev = ((self.close - trend) / (trend + p.eps)).fillna(0.0)
+
+        dev_df = dev.transpose("time", "asset").to_pandas()
+        dev_lag = dev_df.shift(1)
+        autocorr = dev_df.rolling(63, min_periods=21).corr(dev_lag).fillna(0.0)
+
+        mr_speed = xr.DataArray(-autocorr.values, coords=dev.coords, dims=dev.dims)
+        return mr_speed.fillna(0.0).clip(-1, 1)
+
+    def _factor_momentum_quality_ratio(self) -> "xr.DataArray":
+        """Rolling Sharpe-like momentum quality ratio (annualized)."""
+        p = self.params
+        ret_mean = _sma(self.ret, p.MOM_WIN)
+        ret_std = _std(self.ret, p.MOM_WIN)
+        mqr = ret_mean / (ret_std + p.eps)
+        return (mqr * np.sqrt(252)).fillna(0.0).clip(-5, 5)
+
+    def _factor_momentum_persistence(self) -> "xr.DataArray":
+        """Autocorrelation of returns (momentum continuation)."""
+        p = self.params
+        win = int(getattr(p, "PERSISTENCE_WIN", 42))
+
+        ret_df = self.ret.transpose("time", "asset").to_pandas()
+        ret_lag = ret_df.shift(1)
+        pers = ret_df.rolling(win, min_periods=21).corr(ret_lag).fillna(0.0)
+        pers_da = xr.DataArray(pers.values, coords=self.ret.coords, dims=self.ret.dims)
+        return pers_da.fillna(0.0).clip(-1, 1)
+
+    def _factor_momentum_divergence(self) -> "xr.DataArray":
+        """Residual momentum minus price momentum (normalized)."""
+        p = self.params
+
+        price_mom = _sma(self.ret, p.MOM_WIN)
+        resid_mom = _sma(self.resid, p.MOM_WIN)
+        div = resid_mom - price_mom
+        div_std = _std(div, p.IDIO_WIN)
+        return (div / (div_std + p.eps)).fillna(0.0).clip(-3, 3)
+
+    def _factor_vol_of_vol(self) -> "xr.DataArray":
+        """Inverse vol-of-vol (stability premium)."""
+        p = self.params
+        vov_win = int(getattr(p, "VOV_WIN", 21))
+        vol = _std(self.ret, vov_win)
+        vov = _std(vol, p.IDIO_WIN)
+        return (1.0 / (vov + p.eps)).fillna(0.0)
+
+    def _factor_skewness_factor(self) -> "xr.DataArray":
+        """Rolling return skewness."""
+        p = self.params
+        win = int(getattr(p, "SKEW_WIN", 63))
+        ret_df = self.ret.transpose("time", "asset").to_pandas()
+        skew = ret_df.rolling(win, min_periods=21).skew().fillna(0.0)
+        skew_da = xr.DataArray(skew.values, coords=self.ret.coords, dims=self.ret.dims)
+        return skew_da.fillna(0.0).clip(-3, 3)
+
+    def _factor_kurtosis_factor(self) -> "xr.DataArray":
+        """Negative rolling return kurtosis (fat-tail avoidance)."""
+        p = self.params
+        win = int(getattr(p, "KURT_WIN", 63))
+        ret_df = self.ret.transpose("time", "asset").to_pandas()
+        kurt = ret_df.rolling(win, min_periods=21).kurt().fillna(0.0)
+        kurt_da = xr.DataArray(kurt.values, coords=self.ret.coords, dims=self.ret.dims)
+        return (-kurt_da.clip(-10, 20)).fillna(0.0)
+
+    def _factor_regime_momentum(self) -> "xr.DataArray":
+        """Volatility-regime-adaptive momentum blend (short vs long)."""
+        p = self.params
+
+        vol_short = _std(self.ret, p.MOM_SHORT)
+        vol_long = _std(self.ret, p.IDIO_WIN)
+        vol_ratio = vol_short / (vol_long + p.eps)
+
+        w = (1.0 / (1.0 + np.exp(-2.0 * (vol_ratio - 1.0)))).clip(0.2, 0.8)
+        mom_short = _sma(self.resid, p.MOM_SHORT)
+        mom_long = _sma(self.resid, p.MOM_LONG)
+        return (w * mom_short + (1.0 - w) * mom_long).fillna(0.0)
+
+    def _factor_cross_sectional_dispersion(self) -> "xr.DataArray":
+        """Stock relative return weighted by cross-sectional dispersion level."""
+        p = self.params
+        cs_std = self.ret.std("asset")
+        cs_mean = self.ret.mean("asset")
+
+        disp = _sma(cs_std, p.MOM_SHORT)
+        disp_norm = disp / (disp.mean("time") + p.eps)
+
+        rel_ret = self.ret - cs_mean
+        sig = rel_ret * disp_norm.broadcast_like(rel_ret)
+        return _sma(sig, p.MOM_SHORT).fillna(0.0)
+
+    def _factor_liquidity_momentum(self) -> "xr.DataArray":
+        """Liquidity-adjusted residual momentum."""
+        p = self.params
+        resid_mom = _sma(self.resid, p.MOM_WIN)
+        adv = _sma(self.vol * self.close, p.ADV_WIN_LONG)
+        liq = adv / (adv.mean("asset") + p.eps)
+        liq_norm = liq.clip(0, 5) / 2.5
+        return (resid_mom * liq_norm).fillna(0.0)
+
+    # ==========================================================================
+    # OU Mean-Reversion Factors (ported into base library)
+    # ==========================================================================
+
+    def _ou_estimate_params(self, window: int) -> Dict[str, "xr.DataArray"]:
+        """Estimate OU parameters via rolling AR(1) on log-price."""
+        p = self.params
+
+        close = self.close
+        logp = xr.apply_ufunc(np.log, close.where(close > 0)).fillna(0.0)
+        X = logp
+        X_lag = X.shift(time=1)
+
+        minp = max(3, int(window // 2))
+        X_mean = X.rolling(time=window, min_periods=minp).mean()
+        X_lag_mean = X_lag.rolling(time=window, min_periods=minp).mean()
+
+        X_var = X_lag.rolling(time=window, min_periods=minp).var()
+        XY_mean = (X * X_lag).rolling(time=window, min_periods=minp).mean()
+        cov = XY_mean - X_mean * X_lag_mean
+
+        b = cov / (X_var + p.eps)
+        b = xr.where(np.abs(b) < 0.9999, b, 0.9999 * np.sign(b))
+        a = X_mean - b * X_lag_mean
+
+        theta = -xr.apply_ufunc(np.log, np.abs(b) + p.eps)
+        theta = xr.where(theta > 0, theta, p.eps)
+        mu = a / (1.0 - b + p.eps)
+
+        predicted = a + b * X_lag
+        resid = X - predicted
+        sigma = resid.rolling(time=window, min_periods=minp).std()
+
+        hl_min = float(getattr(p, "OU_HALFLIFE_MIN", 2.0))
+        hl_max = float(getattr(p, "OU_HALFLIFE_MAX", 42.0))
+        half_life = (np.log(2.0) / (theta + p.eps)).clip(hl_min, hl_max)
+
+        zclip = float(getattr(p, "OU_ZSCORE_CLIP", 3.0))
+        z = ((X - mu) / (sigma + p.eps)).clip(-zclip, zclip)
+
+        return {
+            "theta": theta.fillna(0.0),
+            "mu": mu.fillna(0.0),
+            "sigma": sigma.fillna(0.0),
+            "half_life": half_life.fillna(hl_max),
+            "zscore": z.fillna(0.0),
+        }
+
+    def _factor_ou_zscore_short(self) -> "xr.DataArray":
+        """Short-term OU z-score (inverted: below equilibrium is positive)."""
+        p = self.params
+        win = int(getattr(p, "OU_SHORT_WIN", 21))
+        ou = self._ou_estimate_params(win)
+        return (-ou["zscore"]).fillna(0.0)
+
+    def _factor_ou_zscore_med(self) -> "xr.DataArray":
+        """Medium-term OU z-score (inverted)."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+        return (-ou["zscore"]).fillna(0.0)
+
+    def _factor_ou_halflife_signal(self) -> "xr.DataArray":
+        """Inverse OU half-life (shorter is stronger)."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+        return (1.0 / (ou["half_life"] + 1.0)).fillna(0.0)
+
+    def _factor_ou_reversion_strength(self) -> "xr.DataArray":
+        """OU theta (mean reversion speed)."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+        return ou["theta"].fillna(0.0)
+
+    def _factor_ou_predicted_return(self) -> "xr.DataArray":
+        """OU expected return proxy: theta*(mu - log_price)."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+
+        logp = xr.apply_ufunc(np.log, self.close.where(self.close > 0)).fillna(0.0)
+        return (ou["theta"] * (ou["mu"] - logp)).fillna(0.0)
+
+    def _factor_ou_regime_indicator(self) -> "xr.DataArray":
+        """Proximity to cross-sectional median half-life (closer is better)."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+        hl = ou["half_life"]
+        hl_med = hl.median(dim="asset")
+        return (-np.abs(hl - hl_med)).fillna(0.0)
+
+    def _factor_ou_equilibrium_dist(self) -> "xr.DataArray":
+        """Blended short/med distance from OU equilibrium (inverted)."""
+        p = self.params
+        w_s = int(getattr(p, "OU_SHORT_WIN", 21))
+        w_m = int(getattr(p, "OU_MED_WIN", 63))
+
+        ou_s = self._ou_estimate_params(w_s)
+        ou_m = self._ou_estimate_params(w_m)
+
+        mu_blend = 0.3 * ou_s["mu"] + 0.7 * ou_m["mu"]
+        sig_blend = 0.3 * ou_s["sigma"] + 0.7 * ou_m["sigma"]
+
+        zclip = float(getattr(p, "OU_ZSCORE_CLIP", 3.0))
+        logp = xr.apply_ufunc(np.log, self.close.where(self.close > 0)).fillna(0.0)
+        dist = ((logp - mu_blend) / (sig_blend + p.eps)).clip(-zclip, zclip)
+        return (-dist).fillna(0.0)
+
+    def _factor_ou_momentum_blend(self) -> "xr.DataArray":
+        """Half-life adaptive blend: reversal for short HL, momentum for long HL."""
+        p = self.params
+        win = int(getattr(p, "OU_MED_WIN", 63))
+        ou = self._ou_estimate_params(win)
+
+        hl_min = float(getattr(p, "OU_HALFLIFE_MIN", 2.0))
+        hl_max = float(getattr(p, "OU_HALFLIFE_MAX", 42.0))
+        hl = ou["half_life"]
+        hl_norm = ((hl - hl_min) / (hl_max - hl_min + p.eps)).clip(0, 1)
+
+        mom_21 = self.ret.rolling(time=21, min_periods=15).sum()
+        mom_63 = self.ret.rolling(time=63, min_periods=42).sum()
+        rev_5 = -self.ret.rolling(time=5, min_periods=3).sum()
+
+        mom_comp = 0.6 * _robust_zscore(mom_21, dim="asset", eps=p.eps) + 0.4 * _robust_zscore(mom_63, dim="asset", eps=p.eps)
+        rev_comp = _robust_zscore(rev_5, dim="asset", eps=p.eps)
+        return (hl_norm * mom_comp + (1.0 - hl_norm) * rev_comp).fillna(0.0)
+
+    # ==========================================================================
+    # GLFT Microstructure Factors (ported into base library)
+    # ==========================================================================
+
+    def _glft_signed_volume(self) -> "xr.DataArray":
+        close = self.close
+        vol = self.vol
+        price_change = close.diff(dim="time")
+        sign = xr.where(price_change > 0, 1.0, xr.where(price_change < 0, -1.0, 0.0))
+        return (sign * vol).fillna(0.0)
+
+    def _glft_ofi(self, window: int) -> "xr.DataArray":
+        p = self.params
+        signed_vol = self._glft_signed_volume()
+        signed_sum = signed_vol.rolling(time=window, min_periods=max(2, window // 2)).sum()
+        vol_sum = self.vol.rolling(time=window, min_periods=max(2, window // 2)).sum()
+        return (signed_sum / (vol_sum + p.eps)).clip(-1, 1).fillna(0.0)
+
+    def _glft_vpin_proxy(self) -> "xr.DataArray":
+        p = self.params
+        win = int(getattr(p, "VPIN_WIN", 50))
+        signed = self._glft_signed_volume()
+        buy = xr.where(signed > 0, signed, 0.0)
+        sell = xr.where(signed < 0, -signed, 0.0)
+        buy_sum = buy.rolling(time=win, min_periods=max(2, win // 2)).sum()
+        sell_sum = sell.rolling(time=win, min_periods=max(2, win // 2)).sum()
+        total = buy_sum + sell_sum + p.eps
+        return (np.abs(buy_sum - sell_sum) / total).fillna(0.0).clip(0, 1)
+
+    def _glft_inventory_proxy(self) -> "xr.DataArray":
+        p = self.params
+        decay = float(getattr(p, "INVENTORY_DECAY", 0.95))
+        decay = float(np.clip(decay, 0.50, 0.999))
+        span = int(max(3, round(1.0 / max(1e-6, (1.0 - decay)))))
+
+        signed = self._glft_signed_volume()
+        df = signed.transpose("time", "asset").to_pandas()
+        inv = df.ewm(span=span, adjust=False, min_periods=max(2, span // 2)).mean()
+        return xr.DataArray(inv.values, coords=signed.coords, dims=signed.dims).fillna(0.0)
+
+    def _factor_glft_ofi_short(self) -> "xr.DataArray":
+        p = self.params
+        return self._glft_ofi(int(getattr(p, "OFI_SHORT_WIN", 5)))
+
+    def _factor_glft_ofi_med(self) -> "xr.DataArray":
+        p = self.params
+        return self._glft_ofi(int(getattr(p, "OFI_MED_WIN", 21)))
+
+    def _factor_glft_ofi_momentum(self) -> "xr.DataArray":
+        p = self.params
+        ofi_s = self._glft_ofi(int(getattr(p, "OFI_SHORT_WIN", 5)))
+        ofi_l = self._glft_ofi(int(getattr(p, "OFI_LONG_WIN", 63)))
+        return (ofi_s - ofi_l).fillna(0.0)
+
+    def _factor_glft_flow_toxicity(self) -> "xr.DataArray":
+        """Inverted VPIN proxy: low toxicity is good."""
+        return (-self._glft_vpin_proxy()).fillna(0.0)
+
+    def _factor_glft_toxic_momentum(self) -> "xr.DataArray":
+        """Falling toxicity is good."""
+        p = self.params
+        vpin = self._glft_vpin_proxy()
+        short = vpin.rolling(time=5, min_periods=3).mean()
+        long = vpin.rolling(time=21, min_periods=14).mean()
+        return (-(short - long)).fillna(0.0)
+
+    def _factor_glft_impact_asymmetry(self) -> "xr.DataArray":
+        p = self.params
+        win = int(getattr(p, "IMPACT_WIN", 42))
+
+        up_ret = xr.where(self.ret > 0, self.ret, 0.0)
+        down_ret = xr.where(self.ret < 0, self.ret, 0.0)
+        up_vol = xr.where(self.ret > 0, self.vol, 0.0)
+        down_vol = xr.where(self.ret < 0, self.vol, 0.0)
+
+        minp = max(2, win // 2)
+        up_impact = (up_ret * up_vol).rolling(time=win, min_periods=minp).sum()
+        up_vol_sum = up_vol.rolling(time=win, min_periods=minp).sum()
+        down_impact = (down_ret * down_vol).rolling(time=win, min_periods=minp).sum()
+        down_vol_sum = down_vol.rolling(time=win, min_periods=minp).sum()
+
+        avg_up = up_impact / (up_vol_sum + p.eps)
+        avg_down = np.abs(down_impact) / (down_vol_sum + p.eps)
+        return (avg_up - avg_down).fillna(0.0)
+
+    def _factor_glft_inventory_signal(self) -> "xr.DataArray":
+        """Contrarian to inventory: high inventory -> negative future returns."""
+        return (-self._glft_inventory_proxy()).fillna(0.0)
+
+    def _factor_glft_inventory_risk_prem(self) -> "xr.DataArray":
+        """Inventory volatility as risk premium proxy."""
+        p = self.params
+        win = int(getattr(p, "IMPACT_WIN", 42))
+        inv = self._glft_inventory_proxy()
+        return inv.rolling(time=win, min_periods=max(2, win // 2)).std().fillna(0.0)
+
+    def _factor_glft_spread_adjusted_mom(self) -> "xr.DataArray":
+        p = self.params
+        win = int(getattr(p, "SPREAD_EST_WIN", 21))
+        hl_ratio = xr.apply_ufunc(np.log, (self.high / (self.low + p.eps) + p.eps).clip(min=p.eps))
+        spread_est = hl_ratio.rolling(time=win, min_periods=max(2, win // 2)).mean()
+        mom_21 = self.ret.rolling(time=21, min_periods=15).sum()
+        return (mom_21 - 2.0 * spread_est).fillna(0.0)
+
+    def _factor_glft_mm_edge(self) -> "xr.DataArray":
+        """Composite MM edge: low toxicity + vol + mean reversion."""
+        p = self.params
+        vpin = self._glft_vpin_proxy()
+        low_tox = -vpin
+
+        vol_21 = self.ret.rolling(time=21, min_periods=15).std()
+        ret_5 = self.ret.rolling(time=5, min_periods=3).sum()
+        mr = -ret_5
+
+        low_tox_z = _robust_zscore(low_tox, dim="asset", eps=p.eps)
+        vol_z = _robust_zscore(vol_21, dim="asset", eps=p.eps)
+        mr_z = _robust_zscore(mr, dim="asset", eps=p.eps)
+
+        return (0.4 * low_tox_z + 0.3 * vol_z + 0.3 * mr_z).fillna(0.0)

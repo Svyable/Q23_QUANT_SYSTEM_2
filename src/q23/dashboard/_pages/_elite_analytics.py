@@ -19,7 +19,11 @@ from q23.dashboard.analytics.scenarios import (
     RankICAnalyzer,
 )
 from q23.dashboard.analytics import select_return_series
-from q23.dashboard.core import DashboardData
+from q23.dashboard.core import (
+    DashboardData,
+    discover_strategy_tags,
+    load_benchmark_for_comparison,
+)
 from q23.dashboard.components.charts import PLOTLY_AVAILABLE
 
 # Constants
@@ -195,7 +199,7 @@ def _add_signal_traces(fig: "go.Figure", regimes: pd.DataFrame) -> None:
 def _update_regime_chart_layout(fig: "go.Figure") -> None:
     """Update chart layout with consistent styling."""
     fig.update_layout(
-        height=600,
+        autosize=True,
         title="Market Regime Analysis Over Time",
         paper_bgcolor="#0E1117",
         plot_bgcolor="#262730",
@@ -318,7 +322,7 @@ def _render_performance_charts(regime_perf: Dict[str, Dict[str, float]]) -> None
                     textposition="outside",
                 ))
             fig_bar.update_layout(
-                height=300,
+                autosize=True,
                 paper_bgcolor="#0E1117",
                 plot_bgcolor="#262730",
                 font=dict(color="#FAFAFA"),
@@ -326,7 +330,7 @@ def _render_performance_charts(regime_perf: Dict[str, Dict[str, float]]) -> None
                 yaxis=dict(tickformat=".0%", gridcolor="#3A3A3A"),
                 xaxis=dict(gridcolor="#3A3A3A"),
             )
-            st.plotly_chart(fig_bar, width='stretch')
+            st.plotly_chart(fig_bar)
         else:
             st.bar_chart(perf_df[["Ann. Return"]])
     
@@ -345,7 +349,7 @@ def _render_performance_charts(regime_perf: Dict[str, Dict[str, float]]) -> None
                     textposition="outside",
                 ))
             fig_bar2.update_layout(
-                height=300,
+                autosize=True,
                 paper_bgcolor="#0E1117",
                 plot_bgcolor="#262730",
                 font=dict(color="#FAFAFA"),
@@ -353,7 +357,7 @@ def _render_performance_charts(regime_perf: Dict[str, Dict[str, float]]) -> None
                 yaxis=dict(gridcolor="#3A3A3A"),
                 xaxis=dict(gridcolor="#3A3A3A"),
             )
-            st.plotly_chart(fig_bar2, width='stretch')
+            st.plotly_chart(fig_bar2)
         else:
             st.bar_chart(perf_df[["Sharpe Ratio"]])
 
@@ -397,6 +401,76 @@ def _render_duration_stats(
                 st.text(f"{trans}: {count} times")
 
 
+def _render_benchmark_selector_elite(
+    date_range: Tuple[str, str],
+) -> Dict[str, pd.Series]:
+    """Render benchmark selector with 'select all' checkbox for elite analytics pages.
+    
+    Args:
+        date_range: Tuple of (start_date, end_date) strings
+    
+    Returns:
+        Dictionary mapping benchmark display names to return series
+    """
+    # Check which benchmarks have saved runs
+    available = {
+        k: v for k, v in BENCHMARK_OPTIONS_ELITE.items() 
+        if discover_strategy_tags(k)
+    }
+    
+    if not available:
+        return {}
+    
+    # Select all checkbox - sync with multiselect
+    all_keys = list(available.keys())
+    
+    # Initialize session state if needed
+    if "elite_benchmark_comparison_select" not in st.session_state:
+        st.session_state.elite_benchmark_comparison_select = []
+    if "elite_benchmark_select_all" not in st.session_state:
+        st.session_state.elite_benchmark_select_all = False
+    
+    # Sync checkbox with multiselect state
+    current_selection = st.session_state.get("elite_benchmark_comparison_select", [])
+    all_selected = len(current_selection) == len(all_keys) and len(all_keys) > 0
+    
+    col_check, col_multiselect = st.columns([1, 4])
+    with col_check:
+        select_all = st.checkbox(
+            "Select All",
+            value=all_selected,
+            key="elite_benchmark_select_all",
+            help="Quickly select/deselect all available benchmarks",
+        )
+    
+    with col_multiselect:
+        # Update selection based on checkbox
+        if select_all and not all_selected:
+            # Select all
+            st.session_state.elite_benchmark_comparison_select = all_keys.copy()
+        elif not select_all and all_selected:
+            # Deselect all
+            st.session_state.elite_benchmark_comparison_select = []
+        
+        selected = st.multiselect(
+            "Compare to Benchmarks",
+            options=all_keys,
+            format_func=lambda x: available[x],
+            default=st.session_state.elite_benchmark_comparison_select,
+            help="Overlay benchmark performance for comparison",
+            key="elite_benchmark_comparison_select",
+        )
+    
+    # Load selected benchmark data
+    benchmark_returns: Dict[str, pd.Series] = {}
+    for bench_id in selected:
+        ret_series = load_benchmark_for_comparison(bench_id, date_range)
+        if ret_series is not None and not ret_series.empty:
+            benchmark_returns[BENCHMARK_OPTIONS_ELITE[bench_id]] = ret_series
+    
+    return benchmark_returns
+
+
 def render_regime_analysis_page(data: DashboardData) -> None:
     """Render the regime analysis page with enhanced visualizations."""
     st.subheader("⚡ Regime Analysis & Detection")
@@ -418,7 +492,7 @@ def render_regime_analysis_page(data: DashboardData) -> None:
     # Create time series chart with color-coded regime areas
     fig = _create_regime_timeline_chart(regimes, ret_series)
     if fig is not None:
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig)
     else:
         # Fallback to simple line chart if Plotly not available
         regime_numeric = regimes["regime"].map({
@@ -821,7 +895,7 @@ def render_rank_ic_page(data: DashboardData):
                 paper_bgcolor="#0E1117",
                 plot_bgcolor="#262730",
                 font={"color": "#FAFAFA", "size": 11},
-                height=350,
+                autosize=True,
                 showlegend=False,
                 xaxis={
                     "title": "Quintile",
@@ -835,7 +909,7 @@ def render_rank_ic_page(data: DashboardData):
                 margin={"l": 60, "r": 40, "t": 50, "b": 40},
             )
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig)
         else:
             st.bar_chart(avg_quintile)
 

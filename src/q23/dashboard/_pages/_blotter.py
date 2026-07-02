@@ -1,12 +1,13 @@
 """
 Blotter Page
 
-Portfolio blotter with positions, treemap visualization, and single-stock drilldown.
+Portfolio blotter with positions, treemap visualization, single-stock drilldown,
+and forward return expectations (T+1, T+5, T+21).
 """
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,11 @@ import streamlit as st
 
 from q23.dashboard.core import DashboardData
 from q23.dashboard.components.charts import create_treemap_chart, PLOTLY_AVAILABLE
+from q23.dashboard.analytics import select_return_series
+from q23.dashboard.analytics.stock_elite_analytics import (
+    compute_batch_forward_returns,
+    format_forward_return_cell,
+)
 
 
 def render_blotter_page(data: DashboardData, expos: Dict) -> None:
@@ -84,7 +90,7 @@ def render_blotter_page(data: DashboardData, expos: Dict) -> None:
                     )
                 
                 if fig is not None:
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig)
                 else:
                     st.info("Could not create treemap")
         else:
@@ -95,7 +101,7 @@ def render_blotter_page(data: DashboardData, expos: Dict) -> None:
     st.divider()
     
     # ==========================================================================
-    # POSITIONS TABLE
+    # POSITIONS TABLE WITH FORWARD RETURNS
     # ==========================================================================
     # Build blotter DataFrame
     blot = pd.DataFrame({"weight": data.w_last})
@@ -120,14 +126,46 @@ def render_blotter_page(data: DashboardData, expos: Dict) -> None:
         if join_cols:
             blot = blot.join(data.factor_vectors[join_cols], how="left")
     
+    # Compute forward return expectations
+    portfolio_returns = select_return_series(data.diag)
+    fwd_returns_df = _compute_blotter_forward_returns(
+        blot.index.tolist(),
+        data.factor_vectors,
+        data.weights,
+        portfolio_returns,
+    )
+    
+    # Join forward returns if computed
+    if fwd_returns_df is not None and not fwd_returns_df.empty:
+        blot = blot.join(fwd_returns_df, how="left")
+    
     blot = blot.sort_values(
         ["side", "abs_w"], ascending=[True, False]
     ).drop(columns=["abs_w"])
     
-    st.markdown("### Positions (with PM summaries)")
+    st.markdown("### Positions (with PM summaries & Forward Returns)")
     
-    # Format and display
-    st.dataframe(blot, width='stretch', height=500)
+    # Show forward return methodology
+    with st.expander("Forward Return Methodology", expanded=False):
+        st.markdown("""
+        **Expected Forward Returns** are computed using Factor IC-based estimation:
+        
+        - `E[R]` = Σ (factor_exposure × IC) × √horizon
+        - Range = E[R] ± σ_stock × √horizon
+        
+        **Horizons:**
+        - `E[T+1]`: Expected 1-day return
+        - `E[T+5]`: Expected 5-day return  
+        - `E[T+21]`: Expected 21-day return (approx. 1 month)
+        
+        *Note: These are estimates based on historical factor exposures and may not predict actual future returns.*
+        """)
+    
+    # Format display DataFrame
+    display_blot = _format_blotter_display(blot)
+    
+    # Display with conditional formatting
+    st.dataframe(display_blot, width="stretch", height=500)
     
     # Download button
     csv_bytes = blot.reset_index().to_csv(index=False).encode("utf-8")
@@ -173,7 +211,7 @@ def render_blotter_page(data: DashboardData, expos: Dict) -> None:
             with left:
                 st.markdown("**Summary**")
                 sview = row[[c for c in row.index if c in summary_cols]].to_frame("value")
-                st.dataframe(sview, width='stretch', height=320)
+                st.dataframe(sview, width="stretch", height=320)
             with right:
                 st.markdown("**Factor Exposures (top 20)**")
                 expos_vec = row[fac_cols].astype(float)
@@ -182,8 +220,103 @@ def render_blotter_page(data: DashboardData, expos: Dict) -> None:
                 )
                 st.dataframe(
                     expos_vec.to_frame("exposure"),
-                    width='stretch',
+                    width="stretch",
                     height=320
                 )
         else:
             st.info("No matching symbols in factor_vectors")
+
+
+def _compute_blotter_forward_returns(
+    symbols: list,
+    factor_vectors: Optional[pd.DataFrame],
+    weights: Optional[pd.DataFrame],
+    portfolio_returns: Optional[pd.Series],
+) -> Optional[pd.DataFrame]:
+    """
+    Compute forward return expectations for blotter positions.
+    
+    Returns DataFrame with formatted E[T+1], E[T+5], E[T+21] columns.
+    """
+    if not symbols:
+        return None
+    
+    try:
+        fwd_df = compute_batch_forward_returns(
+            symbols=symbols,
+            factor_vectors=factor_vectors if factor_vectors is not None else pd.DataFrame(),
+            weights=weights if weights is not None else pd.DataFrame(),
+            portfolio_returns=portfolio_returns if portfolio_returns is not None else pd.Series(dtype=float),
+            horizons=[1, 5, 21],
+        )
+        
+        if fwd_df.empty:
+            return None
+        
+        # Create formatted columns for display
+        result = pd.DataFrame(index=fwd_df.index)
+        
+        for h in [1, 5, 21]:
+            exp_col = f"exp_t{h}"
+            upper_col = f"upper_t{h}"
+            lower_col = f"lower_t{h}"
+            
+            if exp_col in fwd_df.columns:
+                # Create formatted display column
+                result[f"E[T+{h}]"] = fwd_df.apply(
+                    lambda row: format_forward_return_cell(
+                        row.get(exp_col, 0.0),
+                        row.get(lower_col, 0.0),
+                        row.get(upper_col, 0.0),
+                    ),
+                    axis=1
+                )
+        
+        return result
+        
+    except Exception:
+        # Fail gracefully - return None to skip forward returns
+        return None
+
+
+def _format_blotter_display(blot: pd.DataFrame) -> pd.DataFrame:
+    """
+    Format blotter DataFrame for display with appropriate number formatting.
+    """
+    display = blot.copy()
+    
+    # Format weight as percentage
+    if "weight" in display.columns:
+        display["weight"] = display["weight"].apply(lambda x: f"{x:.2%}")
+    
+    # Format P&L columns
+    pnl_cols = ["total_pnl_contrib", "pnl_per_day_held"]
+    for col in pnl_cols:
+        if col in display.columns:
+            display[col] = display[col].apply(
+                lambda x: f"{x:.4f}" if pd.notna(x) else "—"
+            )
+    
+    # Format score columns
+    score_cols = ["mean_score", "score_vol"]
+    for col in score_cols:
+        if col in display.columns:
+            display[col] = display[col].apply(
+                lambda x: f"{x:.3f}" if pd.notna(x) else "—"
+            )
+    
+    # Format weight columns
+    weight_cols = ["avg_weight", "avg_weight_when_held"]
+    for col in weight_cols:
+        if col in display.columns:
+            display[col] = display[col].apply(
+                lambda x: f"{x:.2%}" if pd.notna(x) else "—"
+            )
+    
+    # Format days held
+    if "days_held" in display.columns:
+        display["days_held"] = display["days_held"].apply(
+            lambda x: f"{int(x)}" if pd.notna(x) else "—"
+        )
+    
+    return display

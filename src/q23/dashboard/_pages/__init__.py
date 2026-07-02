@@ -26,8 +26,10 @@ from q23.dashboard._pages._rebalance import render_rebalance_page
 from q23.dashboard._pages._live_strategy import render_live_strategy_page
 from q23.dashboard._pages._strategy_warehouse import render_strategy_warehouse
 from q23.dashboard._pages._strategy_comparison import render_strategy_comparison
+from q23.dashboard._pages._position_stack import render_position_stack
 from q23.dashboard._pages._stock_analysis import render_stock_analysis_page
 from q23.dashboard._pages._stock_elite_analytics import render_stock_elite_analytics_page
+from q23.dashboard._pages._calendar_heatmap import render_calendar_heatmap_page
 
 # Admin panel
 from q23.dashboard._pages._admin import render_admin_panel
@@ -77,8 +79,10 @@ __all__ = [
     "render_live_strategy_page",
     "render_strategy_warehouse",
     "render_strategy_comparison",
+    "render_position_stack",
     "render_stock_analysis_page",
     "render_stock_elite_analytics_page",
+    "render_calendar_heatmap_page",
     # Admin
     "render_admin_panel",
     # Elite analytics

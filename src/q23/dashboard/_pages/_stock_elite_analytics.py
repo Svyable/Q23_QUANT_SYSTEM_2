@@ -44,6 +44,8 @@ from q23.dashboard.analytics.stock_elite_analytics import (
     compute_stock_risk_decomposition,
     compute_elite_scorecard,
     EliteStockMetrics,
+    compute_stock_rating,
+    compute_stock_grades,
 )
 from q23.dashboard.components.charts import (
     PLOTLY_AVAILABLE,
@@ -126,6 +128,15 @@ def render_stock_elite_analytics_page(data: DashboardData) -> None:
     
     # Render elite scorecard
     _render_elite_scorecard(selected_stock, stock_returns, portfolio_returns, stock_weights)
+    
+    # Render ratings and grades
+    _render_ratings_grades_elite(
+        selected_stock,
+        stock_returns,
+        stock_weights,
+        portfolio_returns,
+        data.factor_vectors,
+    )
     
     st.divider()
     
@@ -213,6 +224,105 @@ def _render_elite_scorecard(
         st.metric("N Obs", f"{scorecard.n_observations:,}")
 
 
+def _render_ratings_grades_elite(
+    symbol: str,
+    stock_returns: Optional[pd.Series],
+    stock_weights: pd.Series,
+    portfolio_returns: Optional[pd.Series],
+    factor_vectors: Optional[pd.DataFrame],
+) -> None:
+    """Render ratings and grades panel for elite analytics."""
+    
+    st.markdown("### ⭐ Stock Rating & Grades")
+    
+    # Compute signal quality
+    signal_quality = None
+    if stock_returns is not None and not stock_returns.empty:
+        signal_quality = compute_stock_signal_quality(
+            stock_weights,
+            stock_returns,
+            max_horizon=21,
+        )
+    
+    # Compute rating
+    rating = compute_stock_rating(
+        symbol=symbol,
+        factor_vectors=factor_vectors,
+        stock_returns=stock_returns,
+        portfolio_returns=portfolio_returns,
+        weights=stock_weights,
+        signal_quality=signal_quality,
+    )
+    
+    # Compute elite metrics
+    elite_metrics = None
+    if stock_returns is not None and portfolio_returns is not None:
+        elite_metrics = compute_elite_scorecard(
+            stock_returns,
+            portfolio_returns,
+            stock_weights,
+        )
+    
+    # Compute grades
+    grades = compute_stock_grades(
+        symbol=symbol,
+        factor_vectors=factor_vectors,
+        stock_returns=stock_returns,
+        portfolio_returns=portfolio_returns,
+        weights=stock_weights,
+        signal_quality=signal_quality,
+        elite_metrics=elite_metrics,
+    )
+    
+    # Display rating
+    rating_colors = {
+        "BUY": "🟢",
+        "OVERWEIGHT": "🟡",
+        "HOLD": "⚪",
+        "UNDERWEIGHT": "🟠",
+        "SELL": "🔴",
+    }
+    rating_icon = rating_colors.get(rating.rating, "⚪")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.markdown(f"#### {rating_icon} **{rating.rating}**")
+        score_pct = (rating.score + 1.0) / 2.0
+        st.progress(score_pct, text=f"Score: {rating.score:.3f}")
+        st.metric("Confidence", f"{rating.confidence:.0%}")
+    
+    with col2:
+        st.markdown("**Rating Components:**")
+        st.caption(rating.rationale)
+    
+    # Display grades
+    st.markdown("**Grades:**")
+    grade_colors = {
+        "A+": "🟢", "A": "🟢", "A-": "🟢",
+        "B+": "🟡", "B": "🟡", "B-": "🟡",
+        "C+": "🟠", "C": "🟠", "C-": "🟠",
+        "D+": "🔴", "D": "🔴", "F": "🔴",
+    }
+    
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    
+    grade_info = [
+        ("Momentum", grades.momentum),
+        ("Value/Quality", grades.value_quality),
+        ("Risk Mgmt", grades.risk_management),
+        ("Signal Quality", grades.signal_quality),
+        ("Performance", grades.performance),
+        ("Overall", grades.overall),
+    ]
+    
+    for i, (name, grade) in enumerate(grade_info):
+        with [col1, col2, col3, col4, col5, col6][i]:
+            icon = grade_colors.get(grade, "⚪")
+            st.markdown(f"**{name}**")
+            st.markdown(f"{icon} {grade}")
+
+
 def _render_regime_tab(
     symbol: str,
     stock_returns: Optional[pd.Series],
@@ -268,7 +378,7 @@ def _render_regime_tab(
             })
         
         perf_df = pd.DataFrame(rows)
-        st.dataframe(perf_df, use_container_width=True, hide_index=True)
+        st.dataframe(perf_df, width="stretch", hide_index=True)
     
     st.divider()
     
@@ -302,12 +412,11 @@ def _render_regime_tab(
         _add_regime_backgrounds(fig, timeline, y_min, y_max)
         
         fig.update_layout(
-            **get_plotly_layout(title="Stock Returns by Market Regime", height=400),
-            showlegend=True,
+            **get_plotly_layout(title="Stock Returns by Market Regime", height=400)
         )
         fig.update_yaxes(tickformat=".0%")
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
     
     st.divider()
     
@@ -322,7 +431,7 @@ def _render_regime_tab(
         exposure_display["max_weight"] = exposure_display["max_weight"].apply(lambda x: f"{x:.2%}")
         exposure_display["pct_time_held"] = exposure_display["pct_time_held"].apply(lambda x: f"{x:.1%}")
         
-        st.dataframe(exposure_display, use_container_width=True, hide_index=True)
+        st.dataframe(exposure_display, width="stretch", hide_index=True)
 
 
 def _add_regime_backgrounds(
@@ -464,7 +573,7 @@ def _render_tail_risk_tab(
                 x=rolling_tail.index,
                 y=rolling_tail["cvar_95"],
                 name="CVaR 95%",
-                line=dict(color=PM_COLORS["warning"], dash="dash"),
+                line=dict(color=PM_COLORS["accent"], dash="dash"),
             ),
             row=1, col=1
         )
@@ -490,12 +599,11 @@ def _render_tail_risk_tab(
         )
         
         fig.update_layout(
-            **get_plotly_layout(title="", height=500),
-            showlegend=True,
+            **get_plotly_layout(title="", height=500)
         )
         fig.update_yaxes(tickformat=".1%", row=1, col=1)
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
 
 
 def _render_beta_tab(
@@ -617,11 +725,10 @@ def _render_beta_tab(
         )
         
         fig.update_layout(
-            **get_plotly_layout(title="", height=500),
-            showlegend=True,
+            **get_plotly_layout(title="", height=500)
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
     
     # Interpretation
     with st.expander("Interpretation Guide"):
@@ -767,12 +874,12 @@ def _render_distribution_tab(
                 
                 fig.update_layout(
                     **get_plotly_layout(title="", height=350),
-                    showlegend=True,
                     xaxis_title="Daily Return",
                     yaxis_title="Density",
+                    margin={'l': 70, 'r': 60, 't': 50, 'b': 60},
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         
         with col2:
             st.markdown("**Q-Q Plot vs Normal**")
@@ -808,12 +915,12 @@ def _render_distribution_tab(
                 
                 fig.update_layout(
                     **get_plotly_layout(title="", height=350),
-                    showlegend=True,
                     xaxis_title="Theoretical Quantiles",
                     yaxis_title="Sample Quantiles",
+                    margin={'l': 70, 'r': 60, 't': 50, 'b': 60},
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
     
     # Percentiles
     st.divider()
@@ -826,7 +933,7 @@ def _render_distribution_tab(
         pct_df.index = [f"{k.upper()}" for k in pct_df.index]
         pct_df["Value"] = pct_df["Value"].apply(lambda x: f"{x:.4f}")
         
-        st.dataframe(pct_df.T, use_container_width=True)
+        st.dataframe(pct_df.T, width="stretch")
 
 
 def _render_signal_quality_tab(
@@ -943,10 +1050,9 @@ def _render_signal_quality_tab(
             **get_plotly_layout(title="Information Coefficient by Horizon", height=400),
             xaxis_title="Forward Horizon (days)",
             yaxis_title="IC",
-            showlegend=True,
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
         
         # IC table
         ic_df = pd.DataFrame({
@@ -955,7 +1061,7 @@ def _render_signal_quality_tab(
             "Rank IC": [f"{ic:.3f}" for ic in rank_ic],
         })
         
-        st.dataframe(ic_df, use_container_width=True, hide_index=True)
+        st.dataframe(ic_df, width="stretch", hide_index=True)
     
     # Rolling IC chart
     rolling_ic_series = signal_data.get('rolling_ic_series')
@@ -970,7 +1076,7 @@ def _render_signal_quality_tab(
         )
         
         if fig is not None:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
     
     # Interpretation
     with st.expander("Interpretation Guide"):
@@ -1051,10 +1157,10 @@ def _render_risk_decomposition_tab(
             
             fig.update_layout(
                 **get_plotly_layout(title="", height=300),
-                showlegend=True,
+                margin={'l': 70, 'r': 60, 't': 50, 'b': 60},
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
         
         with col2:
             st.markdown("**Portfolio Contribution**")

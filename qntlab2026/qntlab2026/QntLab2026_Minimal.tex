@@ -1,0 +1,202 @@
+\documentclass[11pt,letterpaper,openany]{book}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    citecolor=red,
+    pdftitle={QntLab2026 Cookbook: Complete Guide to Quantitative Trading},
+    pdfauthor={Q23 Development Team},
+    pdfsubject={Quantitative Trading, Systematic Strategies, Factor Investing},
+    pdfkeywords={quantitative trading, systematic strategies, factor investing, risk management, portfolio optimization},
+    pdfcreator={LaTeX with hyperref},
+    bookmarks=true,
+    bookmarksopen=true,
+    bookmarksnumbered=true,
+    breaklinks=true
+}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tcolorbox}
+\usepackage{etoolbox}
+
+% Page geometry
+\geometry{margin=1in,top=1.25in,bottom=1.25in}
+\linespread{1.1} % Slightly better line spacing
+
+% Colors for code
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+% Code listings setup
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+% Headers and footers
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\leftmark}
+\fancyhead[R]{\thepage}
+\fancyfoot[C]{\textit{QntLab2026 Cookbook -- \today}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Custom theorem environments
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{remark}[theorem]{Remark}
+
+% Recipe environment
+% \newtcolorbox[auto counter]{recipe}[1][]{
+%     colback=blue!5!white,
+%     colframe=blue!75!black,
+%     title=Recipe~\thetcbcounter: #1,
+%     fonttitle=\bfseries,
+%     sharp corners,
+%     boxrule=0.5mm,
+% }
+
+% Key insight box
+\newtcolorbox{keyinsight}{
+    colback=green!5!white,
+    colframe=green!75!black,
+    title=Key Insight,
+    fonttitle=\bfseries,
+    sharp corners,
+    boxrule=0.5mm,
+}
+
+% Production note box
+\newtcolorbox{productionnote}{
+    colback=red!5!white,
+    colframe=red!75!black,
+    title=Production Note,
+    fonttitle=\bfseries,
+    sharp corners,
+    boxrule=0.5mm,
+}
+
+% Custom commands
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\Q}{\mathbb{Q}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\Corr}{\mathrm{Corr}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\IC}{\mathrm{IC}}
+\newcommand{\IR}{\mathrm{IR}}
+\newcommand{\Sharpe}{\mathrm{Sharpe}}
+\newcommand{\MaxDD}{\mathrm{MaxDD}}
+\newcommand{\OFI}{\mathrm{OFI}}
+\newcommand{\VPIN}{\mathrm{VPIN}}
+\newcommand{\GLFT}{\mathrm{GLFT}}
+
+\title{QntLab2026 Cookbook: \\
+The Complete Guide to Quantitative Trading \\
+\textit{From Theory to Production Mastery}}
+
+
+\author{Q23 Development Team \\
+\textit{Inspired by Max Dama, Powered by Battle-Tested Systems}}
+
+\date{2026}
+
+\begin{document}
+
+% Prevent empty pages in chapters
+\makeatletter
+\@openrightfalse
+\makeatother
+
+\maketitle
+
+\setcounter{tocdepth}{3}
+\tableofcontents
+
+\chapter*{Foreword: Cooking Up Quant Alpha}
+\addcontentsline{toc}{chapter}{Foreword}
+
+Welcome to \textit{QntLab2026 Cookbook}, the most comprehensive guide to quantitative trading ever assembled. This is not just another academic text or superficial tutorial—it's a production-grade cookbook that takes you from basic concepts to building and deploying world-class systematic strategies.
+
+\textbf{Why a Cookbook?}
+
+In the kitchen of quantitative finance, recipes are everything. A great chef doesn't just understand ingredients—they know how to combine them, when to apply heat, and how to avoid burning the dish. Similarly, successful quant traders don't just understand factors—they know how to combine them, when to apply leverage, and how to avoid blowing up portfolios.
+
+\textbf{What Makes This Different?}
+
+\begin{itemize}
+    \item \textbf{Production-Ready Code:} Every recipe comes with working Q23 system code
+    \item \textbf{Real-World Examples:} Strategies that have been live in production
+    \item \textbf{Risk Management First:} Every recipe emphasizes robustness and drawdown control
+    \item \textbf{Complete Stack:} From factor discovery to portfolio deployment
+    \item \textbf{Battle-Tested Insights:} Lessons from years of live trading
+\end{itemize}
+
+\textbf{Who Should Read This?}
+
+\begin{enumerate}
+    \item \textbf{Aspiring Quants:} Learn systematic trading from the ground up
+    \item \textbf{Professional Traders:} Discover cutting-edge techniques and risk management
+    \item \textbf{Technology Professionals:} Understand how to build production trading systems
+    \item \textbf{Students:} Bridge the gap between academic theory and real-world application
+\end{enumerate}
+
+\textbf{The Q23 Philosophy}
+
+Q23 represents the pinnacle of systematic trading technology. Every recipe in this cookbook is drawn from our battle-tested system that manages real capital with:
+
+\begin{itemize}
+    \item 24+ production strategies
+    \item 40+ sophisticated factors
+    \item Real-time risk management
+    \item Institutional-grade infrastructure
+\end{itemize}
+
+\textbf{Acknowledgments}
+
+\end{document}

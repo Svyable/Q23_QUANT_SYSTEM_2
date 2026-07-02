@@ -449,9 +449,11 @@ def _brinson_asset_level(
     
     # Allocation effect: overweight in outperforming assets
     # Sum of (w_p - w_b) * (r_b - R_b) where R_b is benchmark total return
-    allocation = pd.Series(index=returns.index, dtype=float)
-    selection = pd.Series(index=returns.index, dtype=float)
-    interaction = pd.Series(index=returns.index, dtype=float)
+    # Collect values to avoid Series fragmentation
+    allocation_values = []
+    selection_values = []
+    interaction_values = []
+    allocation_dates = []
     
     for date in returns.index:
         if date not in port_w.index:
@@ -469,9 +471,15 @@ def _brinson_asset_level(
         select_contrib = wb * (r - rb)
         inter_contrib = (wp - wb) * (r - rb)
         
-        allocation.loc[date] = alloc_contrib.sum()
-        selection.loc[date] = select_contrib.sum()
-        interaction.loc[date] = inter_contrib.sum()
+        allocation_values.append(alloc_contrib.sum())
+        selection_values.append(select_contrib.sum())
+        interaction_values.append(inter_contrib.sum())
+        allocation_dates.append(date)
+    
+    # Build Series at once to avoid fragmentation
+    allocation = pd.Series(allocation_values, index=allocation_dates)
+    selection = pd.Series(selection_values, index=allocation_dates)
+    interaction = pd.Series(interaction_values, index=allocation_dates)
     
     return BrinsonResult(
         allocation_effect=allocation.dropna(),
@@ -496,9 +504,11 @@ def _brinson_sector_level(
     # Get unique sectors
     sectors = list(set(sector_map.values()))
     
-    allocation = pd.Series(index=returns.index, dtype=float)
-    selection = pd.Series(index=returns.index, dtype=float)
-    interaction = pd.Series(index=returns.index, dtype=float)
+    # Collect values to avoid Series fragmentation
+    allocation_values = []
+    selection_values = []
+    interaction_values = []
+    allocation_dates = []
     
     for date in returns.index:
         if date not in port_w.index:
@@ -562,9 +572,15 @@ def _brinson_sector_level(
             # Interaction
             inter_sum += (wp_s - wb_s) * (rp_s - rb_s)
         
-        allocation.loc[date] = alloc_sum
-        selection.loc[date] = select_sum
-        interaction.loc[date] = inter_sum
+        allocation_values.append(alloc_sum)
+        selection_values.append(select_sum)
+        interaction_values.append(inter_sum)
+        allocation_dates.append(date)
+    
+    # Build Series at once to avoid fragmentation
+    allocation = pd.Series(allocation_values, index=allocation_dates)
+    selection = pd.Series(selection_values, index=allocation_dates)
+    interaction = pd.Series(interaction_values, index=allocation_dates)
     
     # Total active return
     port_ret = (port_w * returns).sum(axis=1)
@@ -1279,7 +1295,9 @@ def compute_beta_analysis(
     port_ret = portfolio_returns.reindex(common_idx)
     fact_ret = factor_returns.reindex(common_idx)
     
-    betas = pd.DataFrame(index=common_idx, columns=fact_ret.columns, dtype=float)
+    # Collect beta values to avoid DataFrame fragmentation
+    beta_data = []
+    beta_dates = []
     
     for i in range(window, len(common_idx)):
         date = common_idx[i]
@@ -1287,6 +1305,7 @@ def compute_beta_analysis(
         
         y = port_ret.iloc[start:i].values
         
+        row_data = {}
         for factor in fact_ret.columns:
             x = fact_ret[factor].iloc[start:i].values
             
@@ -1294,7 +1313,16 @@ def compute_beta_analysis(
             cov_xy = np.cov(x, y)[0, 1]
             var_x = np.var(x)
             
-            betas.loc[date, factor] = cov_xy / (var_x + 1e-12)
+            row_data[factor] = cov_xy / (var_x + 1e-12)
+        
+        beta_data.append(row_data)
+        beta_dates.append(date)
+    
+    # Build DataFrame at once to avoid fragmentation
+    if beta_data:
+        betas = pd.DataFrame(beta_data, index=beta_dates, columns=fact_ret.columns)
+    else:
+        betas = pd.DataFrame(index=common_idx, columns=fact_ret.columns, dtype=float)
     
     return betas.dropna()
 

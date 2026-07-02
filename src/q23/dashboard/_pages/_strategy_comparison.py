@@ -358,6 +358,11 @@ def compute_rolling_correlation(
         return pd.DataFrame()
 
     returns_df = pd.DataFrame(returns_dict).dropna()
+    
+    # Limit data for performance (keep most recent 1000 rows max)
+    if len(returns_df) > 1000:
+        returns_df = returns_df.tail(1000)
+    
     names = list(returns_df.columns)
 
     rolling_corr = {}
@@ -530,6 +535,10 @@ def compute_rolling_sharpe(
         ret_series = _compute_return_series(data)
         if ret_series.empty or len(ret_series) < window:
             continue
+        
+        # Limit data for performance (keep most recent 1000 rows max)
+        if len(ret_series) > 1000:
+            ret_series = ret_series.tail(1000)
         
         label = get_strategy_display_name(sid)
         rolling_mean = ret_series.rolling(window).mean()
@@ -716,7 +725,7 @@ def render_strategy_comparison(
         benchmark_selection = st.multiselect(
             "Benchmarks to Include",
             options=BENCHMARK_STRATEGY_IDS,
-            default=BENCHMARK_STRATEGY_IDS,  # Include all by default
+            default=[],  # Don't select all by default for performance
             format_func=lambda x: get_strategy_display_name(x),
         )
         comparison_strategies.extend(benchmark_selection)
@@ -762,7 +771,7 @@ def render_strategy_comparison(
                         data.diag = data.diag.loc[diag_mask].copy() if diag_mask.any() else data.diag
                 
                 if data.weights is None or data.weights.empty:
-                    st.warning(f"Could not compute benchmark '{sid}'. Market cap data may be unavailable.")
+                    st.warning(f"⚠️ Could not compute benchmark '{sid}' - market cap data may be unavailable")
                     continue
                 
                 # Check if benchmark has any non-zero weights (market cap benchmarks might fail)
@@ -774,7 +783,9 @@ def render_strategy_comparison(
                 if sid in strategy_configs:
                     tc_bps_map[sid] = strategy_configs[sid].tc_bps
             except Exception as e:
-                st.warning(f"Error computing benchmark '{sid}': {e}")
+                st.error(f"❌ Failed to compute benchmark '{sid}'")
+                with st.expander("Error Details", expanded=False):
+                    st.code(str(e))
                 continue
         else:
             # Regular strategy - load from files
@@ -890,7 +901,15 @@ def render_strategy_comparison(
 
     st.markdown("### Rolling Analytics")
     
-    window = st.slider("Rolling Window (days)", 21, 252, 63, 21, key="comparison_rolling_window")
+    window = st.slider(
+        "📊 Rolling Window (days)",
+        21,
+        252,
+        63,
+        21,
+        key="comparison_rolling_window",
+        help="Time window for rolling calculations (correlation, Sharpe ratio). Shorter windows show recent trends, longer windows show long-term stability."
+    )
     
     roll_col1, roll_col2 = st.columns(2)
     
@@ -1526,14 +1545,22 @@ def display_capacity_analysis(strategy_data: Dict[str, DashboardData]):
         with col1:
             st.markdown("#### High Capacity Strategies")
             if not high_capacity.empty:
-                for _, row in high_capacity.iterrows():
-                    st.markdown(f"**{row['Strategy']}**: Score {row['Capacity Score']:.1f}")
+                # Use itertuples() instead of iterrows() for better performance
+                for row in high_capacity.itertuples(index=False):
+                    # Access columns by position: Strategy is first, Capacity_Score is last
+                    strategy_name = row[0]  # Strategy column
+                    capacity_score = row[-1]  # Capacity Score column (last)
+                    st.markdown(f"**{strategy_name}**: Score {capacity_score:.1f}")
 
         with col2:
             st.markdown("#### Capacity-Constrained Strategies")
             if not low_capacity.empty:
-                for _, row in low_capacity.iterrows():
-                    st.markdown(f"⚠️ **{row['Strategy']}**: Score {row['Capacity Score']:.1f}")
+                # Use itertuples() instead of iterrows() for better performance
+                for row in low_capacity.itertuples(index=False):
+                    # Access columns by position: Strategy is first, Capacity_Score is last
+                    strategy_name = row[0]  # Strategy column
+                    capacity_score = row[-1]  # Capacity Score column (last)
+                    st.markdown(f"⚠️ **{strategy_name}**: Score {capacity_score:.1f}")
 
     except Exception as e:
         st.error(f"Error in capacity analysis: {str(e)}")

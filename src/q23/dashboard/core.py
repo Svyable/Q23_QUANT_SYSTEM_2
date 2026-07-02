@@ -75,21 +75,46 @@ def get_default_date_range() -> Dict[str, str]:
 
 
 def get_date_preset_range(preset: str) -> Tuple[str, str]:
-    """Convert preset name to (start_date, end_date) tuple."""
+    """Convert preset name to (start_date, end_date) tuple.
+    
+    Preset options:
+    - "2026": Current year YTD (2026-01-01 to today) - only available if current_year >= 2026
+    - "2025": Full year 2025 (2025-01-01 to 2025-12-31)
+    - "2024": Full year 2024 (2024-01-01 to 2024-12-31)
+    - Other years: Full year ranges
+    - "All": All available data
+    """
     today = datetime.now()
+    current_year = today.year
 
-    presets = {
-        "2025": ("2025-01-01", today.strftime("%Y-%m-%d")),
-        "2024-25": ("2024-01-01", today.strftime("%Y-%m-%d")),
-        "2024": ("2024-01-01", "2024-12-31"),
-        "2023": ("2023-01-01", "2023-12-31"),
-        "2022": ("2022-01-01", "2022-12-31"),
-        "2021": ("2021-01-01", "2021-12-31"),
-        "2020": ("2020-01-01", "2020-12-31"),
-        "All": ("2020-01-01", today.strftime("%Y-%m-%d")),
-    }
+    presets = {}
+    
+    # Add current year YTD if we're in that year (only for 2026+)
+    if current_year >= 2026:
+        presets["2026"] = ("2026-01-01", today.strftime("%Y-%m-%d"))
+    
+    # Fixed full years - no overlap, clear boundaries
+    presets["2025"] = ("2025-01-01", "2025-12-31")
+    presets["2024"] = ("2024-01-01", "2024-12-31")
+    presets["2023"] = ("2023-01-01", "2023-12-31")
+    presets["2022"] = ("2022-01-01", "2022-12-31")
+    presets["2021"] = ("2021-01-01", "2021-12-31")
+    presets["2020"] = ("2020-01-01", "2020-12-31")
+        
+    # All data option
+    presets["All"] = ("2020-01-01", today.strftime("%Y-%m-%d"))
 
-    return presets.get(preset, ("2020-01-01", today.strftime("%Y-%m-%d")))
+    result = presets.get(preset)
+    if result is None:
+        # Fallback to most recent available option
+        if current_year >= 2026 and "2026" in presets:
+            return presets["2026"]
+        elif "2025" in presets:
+            return presets["2025"]
+        else:
+            return presets.get("All", ("2020-01-01", today.strftime("%Y-%m-%d")))
+    
+    return result
 
 
 def get_strategy_output_dir(strategy_id: str) -> Path:
@@ -635,66 +660,14 @@ def artifacts_to_dashboard_data(
     )
 
 
-def _filter_dashboard_data_by_date_range(
-    data: DashboardData,
-    date_range: Tuple[str, str]
-) -> DashboardData:
-    """Filter dashboard data by date range.
-
-    Args:
-        data: DashboardData to filter
-        date_range: Tuple of (start_date, end_date) strings
-
-    Returns:
-        Filtered DashboardData
-    """
-    start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-
-    # Filter weights (time x asset DataFrame)
-    filtered_weights = None
-    if data.weights is not None and not data.weights.empty:
-        if isinstance(data.weights.index, pd.DatetimeIndex):
-            mask = (data.weights.index >= start_date) & (data.weights.index <= end_date)
-            filtered_weights = data.weights.loc[mask].copy() if mask.any() else None
-
-    # Filter diagnostics (time series data)
-    filtered_diag = None
-    if data.diag is not None and not data.diag.empty:
-        if isinstance(data.diag.index, pd.DatetimeIndex):
-            mask = (data.diag.index >= start_date) & (data.diag.index <= end_date)
-            filtered_diag = data.diag.loc[mask].copy() if mask.any() else None
-
-    # Filter exposure data
-    filtered_exposure = None
-    if data.exposure is not None and not data.exposure.empty:
-        if isinstance(data.exposure.index, pd.DatetimeIndex):
-            mask = (data.exposure.index >= start_date) & (data.exposure.index <= end_date)
-            filtered_exposure = data.exposure.loc[mask].copy() if mask.any() else None
-
-    # Return filtered data (keep other fields unchanged)
-    return DashboardData(
-        weights=filtered_weights,
-        budget=data.budget,  # Budget is usually static
-        factor_weights=data.factor_weights,  # Factor weights are usually static
-        ic=data.ic,  # IC data is usually static
-        meta=data.meta,
-        diag=filtered_diag,
-        exposure=filtered_exposure,
-        factor_vectors=data.factor_vectors,
-        tag=data.tag,
-        base_name=data.base_name,
-    )
-
-
 def load_strategy_dashboard_data(
     strategy_id: str,
     tag: str,
     date_range: Optional[Tuple[str, str]] = None,
 ) -> DashboardData:
     """Load dashboard data for a strategy.
-
+    
     Tries multiple locations and base names to handle legacy and new file layouts.
-    Applies date range filtering if specified.
     """
     strategy_dir = get_strategy_output_dir(strategy_id)
     root = _project_root()
@@ -759,9 +732,32 @@ def load_strategy_dashboard_data(
             base_name=strategy_id,
         )
 
-    # Apply date range filtering if specified
-    if date_range is not None:
-        data = _filter_dashboard_data_by_date_range(data, date_range)
+    if date_range is not None and data.weights is not None:
+        start_date, end_date = date_range
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+
+        # Helper function to filter DataFrame by date range efficiently
+        # Only creates copy if necessary (when mask doesn't cover all data)
+        def _filter_by_date_range(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+            if df is None or df.empty:
+                return df
+            mask = (df.index >= start) & (df.index <= end)
+            # Only copy if we're actually filtering (not selecting all rows)
+            if mask.all():
+                return df  # No filtering needed, return original
+            elif mask.any():
+                # Filtering needed - use .loc without explicit copy (pandas creates view when possible)
+                return df.loc[mask]
+            else:
+                # No data in range - return empty DataFrame with same structure
+                return df.iloc[0:0]
+
+        data.weights = _filter_by_date_range(data.weights, start_dt, end_dt)
+        data.diag = _filter_by_date_range(data.diag, start_dt, end_dt)
+        data.exposure = _filter_by_date_range(data.exposure, start_dt, end_dt)
+        data.factor_weights = _filter_by_date_range(data.factor_weights, start_dt, end_dt)
+        data.budget = _filter_by_date_range(data.budget, start_dt, end_dt)
 
     return data
 

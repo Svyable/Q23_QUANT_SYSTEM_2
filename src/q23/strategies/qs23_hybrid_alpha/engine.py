@@ -14,6 +14,7 @@ from q23.strategies.base import StrategyBase, StrategyConfig, StrategyArtifacts
 from q23.strategies.registry import StrategyRegistry
 from q23.strategies.qs23_hybrid_alpha.config import qs23_config, QS23_FACTORS
 from q23.strategy.outputs import OutputWriter
+from q23.shared import config as global_config
 
 
 @StrategyRegistry.register
@@ -60,6 +61,7 @@ class QS23HybridAlphaStrategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -75,8 +77,13 @@ class QS23HybridAlphaStrategy(StrategyBase):
 
         bundle = load_market_data(
             min_date=use_min_date,
+            max_date=max_date,
             exchanges=[cfg.EXCHANGE],
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

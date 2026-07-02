@@ -27,9 +27,6 @@ Benchmark Auto-Run:
 Debug Mode:
   Use Q23_DEBUG_RUNS=true for detailed logging of freshness checks and run decisions.
 
-Legacy example (DEPRECATED - use Strategy Warehouse instead):
-  Q23_RUN_V4=true
-  Q23_RUN_nasnys_v4=true
 """
 
 from __future__ import annotations
@@ -226,30 +223,19 @@ class RunResult:
     message: str = ""
 
 
-def _run_legacy_v4(tag: Optional[str] = None) -> RunResult:
-    """Run legacy StrategyEngine (backward compatibility)."""
-    from q23.strategy.engine import StrategyEngine
-
-    eng = StrategyEngine()
-    artifacts = eng.run(tag=tag)
-
-    outdir = None
-    if isinstance(artifacts, dict):
-        outdir = artifacts.get("output_dir")
-    else:
-        outdir = getattr(artifacts, "output_dir", None)
-
-    msg = f"v4 done. output_dir={outdir}" if outdir else "v4 done."
-    return RunResult(name="v4", rc=0, message=msg)
-
-
-def _run_strategy(strategy_id: str, tag: Optional[str] = None) -> RunResult:
-    """Run a registered strategy from StrategyRegistry."""
+def _run_strategy(strategy_id: str, tag: Optional[str] = None, force_live_data: Optional[bool] = None) -> RunResult:
+    """Run a registered strategy from StrategyRegistry.
+    
+    Args:
+        strategy_id: Strategy ID to run
+        tag: Optional tag for output files
+        force_live_data: Force live data fetching (deprecated - strategies handle this internally)
+    """
     try:
         from q23.strategies.registry import StrategyRegistry
         
         strategy = StrategyRegistry.get_instance(strategy_id)
-        artifacts = strategy.run(tag=tag, write_outputs=True)
+        artifacts = strategy.run(tag=tag, write_outputs=True, force_live_data=force_live_data or False)
         
         output_dir = strategy.get_output_dir()
         msg = f"{strategy_id} done. output_dir={output_dir}"
@@ -497,9 +483,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Load JSON config from Strategy Warehouse
     json_config = _get_enabled_strategies_config()
     config_source = "enabled_strategies.json" if json_config else "environment variables"
-    
-    # Check legacy StrategyEngine flag (backward compatibility)
-    run_legacy_v4 = _str2bool(os.environ.get("Q23_RUN_V4", "false"))
 
     # Check flags for each registered strategy (JSON config + env vars)
     strategy_flags = {}
@@ -520,7 +503,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"  Today: {today_prefix} ({today.strftime('%Y-%m-%d %H:%M:%S')})")
     print(f"  Debug mode: {DEBUG_RUNS}")
     print(f"  Auto-run benchmarks: {auto_run_benchmarks and not skip_benchmarks}")
-    print(f"  Q23_RUN_V4 (legacy): {run_legacy_v4}")
+    
+    # Marketstack status
+    try:
+        from q23.strategy.marketstack_telemetry import get_telemetry_manager
+        tel_mgr = get_telemetry_manager()
+        tel = tel_mgr.get_telemetry()
+        status_summary = tel_mgr.get_status_summary()
+        print(f"  Marketstack: {status_summary}")
+        if tel.last_fetch:
+            last_fetch_time = __import__('datetime').datetime.fromtimestamp(
+                tel.last_fetch.timestamp, tz=__import__('datetime').timezone.utc
+            ).strftime("%H:%M:%S")
+            print(f"    Last fetch: {last_fetch_time} ({tel.last_fetch.fetched_date or 'N/A'})")
+    except Exception as e:
+        if DEBUG_RUNS:
+            print(f"  Marketstack: Error loading status ({e})")
+        else:
+            print(f"  Marketstack: Status unavailable")
     print("")
     
     # Print strategy status with freshness info
@@ -553,10 +553,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     
     # Print benchmark status summary
     if benchmark_strategies:
+        enabled_bench_count = sum(
+            1 for bench_id in benchmark_strategies
+            if _get_strategy_enabled_status(bench_id, json_config)
+        )
         print("")
-        print(f"  Benchmarks: {len(benchmark_strategies)} available")
+        print(f"  Benchmarks: {len(benchmark_strategies)} available, {enabled_bench_count} enabled")
         if auto_run_benchmarks and not skip_benchmarks:
-            print("    (will auto-run after regular strategies)")
+            if enabled_bench_count > 0:
+                print(f"    (will auto-run {enabled_bench_count} enabled benchmark{'s' if enabled_bench_count != 1 else ''} after regular strategies)")
+            else:
+                print("    (all disabled in enabled_strategies.json - enable in Strategy Warehouse to auto-run)")
         elif skip_benchmarks:
             print("    (skipped: Q23_SKIP_BENCHMARKS=true)")
         else:
@@ -572,14 +579,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("")
 
     rc = 0
-
-    # Run legacy StrategyEngine if enabled
-    if run_legacy_v4:
-        print(">> Running legacy v4 StrategyEngine...")
-        r = _run_legacy_v4(tag=tag)
-        print(f">> {r.name}: {r.message}")
-        if r.rc != 0:
-            rc = max(rc, r.rc)
 
     # Run registered strategies if enabled and not fresh (or force_rerun)
     print("===== Running Regular Strategies =====")
@@ -599,27 +598,71 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f">> Running {strategy_id}...")
         r = _run_strategy(strategy_id, tag=tag)
         print(f">> {r.name}: {r.message}")
+        
+        # Show Marketstack activity for this strategy
+        try:
+            from q23.strategy.marketstack_telemetry import get_telemetry_manager
+            tel_mgr = get_telemetry_manager()
+            tel = tel_mgr.get_telemetry()
+            if tel.last_fetch and tel.last_fetch.strategy_id == strategy_id:
+                fetch = tel.last_fetch
+                result_icon = "✅" if fetch.result.value == "success" else "❌"
+                print(f"    {result_icon} Marketstack: {fetch.fetched_date or 'N/A'} | "
+                      f"{fetch.rows_fetched} rows | {fetch.duration_ms:.0f}ms")
+        except Exception:
+            pass
+        
         ran_count += 1
         if r.rc != 0:
             rc = max(rc, r.rc)
     
     if ran_count == 0 and not strategies_to_run:
         print(">> No regular strategies to run")
+    
+    # Show Marketstack summary after runs
+    try:
+        from q23.strategy.marketstack_telemetry import get_telemetry_manager
+        tel_mgr = get_telemetry_manager()
+        tel = tel_mgr.get_telemetry()
+        if tel.total_fetches > 0:
+            print("")
+            print("===== Marketstack Summary =====")
+            print(f"  Total fetches: {tel.total_fetches}")
+            print(f"  Successful: {tel.successful_fetches} ({tel.get_success_rate():.1f}%)")
+            print(f"  Failed: {tel.failed_fetches}")
+            print(f"  Total rows fetched: {tel.total_rows_fetched}")
+            if tel.fetch_history:
+                print("  Recent activity:")
+                for line in tel_mgr.get_recent_activity_summary(max_records=3):
+                    print(f"    {line}")
+    except Exception:
+        pass
 
-    # Auto-run benchmarks after regular strategies
+    # Auto-run benchmarks after regular strategies (only if enabled in config)
     if auto_run_benchmarks and not skip_benchmarks and benchmark_strategies:
-        bench_failures = _ensure_benchmarks_fresh(
-            today=today,
-            required_benchmarks=benchmark_strategies,
-            force_rerun=force_rerun,
-        )
-        if bench_failures > 0:
-            print(f"WARNING: {bench_failures} benchmark(s) failed")
-            # Don't fail overall run for benchmark failures
-            # They're not critical for strategy execution
+        # Filter benchmarks to only those that are enabled
+        enabled_benchmarks = [
+            bench_id for bench_id in benchmark_strategies
+            if _get_strategy_enabled_status(bench_id, json_config)
+        ]
+        
+        if enabled_benchmarks:
+            bench_failures = _ensure_benchmarks_fresh(
+                today=today,
+                required_benchmarks=enabled_benchmarks,
+                force_rerun=force_rerun,
+            )
+            if bench_failures > 0:
+                print(f"WARNING: {bench_failures} benchmark(s) failed")
+                # Don't fail overall run for benchmark failures
+                # They're not critical for strategy execution
+        else:
+            print("")
+            print("  Benchmarks: All disabled in enabled_strategies.json (skipping auto-run)")
+            print("  Enable benchmarks in Strategy Warehouse to auto-run them")
 
     # Warn if nothing was enabled
-    if not run_legacy_v4 and not any(strategy_flags.values()):
+    if not any(strategy_flags.values()):
         print("")
         print("WARNING: No strategies enabled.")
         print("")
@@ -636,8 +679,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Available strategies:")
         for strategy_id in regular_strategies:
             print(f"  - {strategy_id}")
-        print("")
-        print("Or run legacy engine: Q23_RUN_V4=true (deprecated)")
     
     # Hint about force rerun if all were skipped
     elif strategies_to_skip and not strategies_to_run and not force_rerun:

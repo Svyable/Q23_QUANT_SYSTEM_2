@@ -42,6 +42,17 @@ from q23.strategy.data_cache import (
     is_cache_valid,
     cleanup_old_cache,
 )
+from q23.strategy.marketstack_client import MarketstackClient
+from q23.strategy.symbol_mapper import batch_convert_assets
+from q23.strategy.data_gap_detector import (
+    should_fetch_marketstack,
+    get_missing_date_range,
+    get_latest_quantiacs_date,
+)
+from q23.strategy.data_merger import (
+    marketstack_to_xarray,
+    merge_datasets,
+)
 
 
 def _require_xr() -> None:
@@ -182,6 +193,10 @@ def load_quantiacs_stocks(
     fields: Optional[Sequence[str]] = None,
     forward_order: bool = True,
     use_file_cache: bool = True,
+    fill_recent_days: Optional[int] = None,
+    use_marketstack: bool = True,
+    force_live_data: bool = False,
+    strategy_id: Optional[str] = None,
 ) -> "xr.Dataset":
     """Load equity OHLCV (and is_liquid if available) from Quantiacs.
 
@@ -192,6 +207,7 @@ def load_quantiacs_stocks(
     Robustness:
     - Tries multiple qnt loader entry points (load_spx_data, stocks.load_data, qnt.data.load_data)
     - Retries with reduced field sets if qnt rejects a requested field (common with 'is_liquid')
+    - Optionally fetches recent missing days from Marketstack API
     
     Args:
         min_date: Minimum date to load
@@ -200,9 +216,12 @@ def load_quantiacs_stocks(
         fields: Specific fields to load (optional)
         forward_order: Whether to sort by time ascending
         use_file_cache: Whether to use file-based daily cache (default True)
+        fill_recent_days: Number of recent days to fill from Marketstack (defaults to cfg.marketstack.DEFAULT_LOOKBACK_DAYS if use_marketstack=True)
+        use_marketstack: Enable Marketstack integration to fill missing recent days (default True)
+        force_live_data: If True, always fetch latest Marketstack data even if no gap detected (default False)
     
     Returns:
-        xr.Dataset with OHLCV data
+        xr.Dataset with OHLCV data (potentially merged with Marketstack data)
     """
     _require_xr()
 
@@ -215,12 +234,71 @@ def load_quantiacs_stocks(
     if use_file_cache and is_cache_valid(cache_key):
         cached_ds = load_cached_data(cache_key)
         if cached_ds is not None:
+            # #region agent log
+            try:
+                import json
+                with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                    latest_cached = get_latest_quantiacs_date(cached_ds) if hasattr(cached_ds, 'time') else None
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "F",
+                        "location": "data_loader.py:230",
+                        "message": "Using cached data",
+                        "data": {
+                            "latest_cached_date": str(latest_cached) if latest_cached else None,
+                            "force_live_data": force_live_data
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }) + "\n")
+            except: pass
+            # #endregion
             # Apply filters to cached data
             ds = _filter_cached_dataset(cached_ds, min_date, max_date, assets)
             if ds is not None:
                 # Ensure canonical dims order
                 ds = ds.transpose("time", "asset", missing_dims="ignore")
-                return ds
+                # If force_live_data, skip cache and fetch fresh Marketstack data
+                if force_live_data:
+                    # #region agent log
+                    try:
+                        import json
+                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "F",
+                                "location": "data_loader.py:238",
+                                "message": "Skipping cache due to force_live_data",
+                                "data": {"strategy_id": strategy_id},
+                                "timestamp": int(__import__('time').time() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
+                    # Don't return cached data - continue to API load to get fresh Marketstack data
+                    pass
+                else:
+                    # #region agent log
+                    try:
+                        import json
+                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                            latest_cached = get_latest_quantiacs_date(ds) if hasattr(ds, 'time') else None
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "F",
+                                "location": "data_loader.py:245",
+                                "message": "Returning cached data (no force_live_data)",
+                                "data": {
+                                    "latest_cached_date": str(latest_cached) if latest_cached else None,
+                                    "force_live_data": force_live_data,
+                                    "strategy_id": strategy_id
+                                },
+                                "timestamp": int(__import__('time').time() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
+                    return ds
             # If ds is None, cache was invalid - continue to API load
 
     try:
@@ -275,6 +353,340 @@ def load_quantiacs_stocks(
 
                 # Canonical dims order
                 ds = ds.transpose("time", "asset", missing_dims="ignore")
+
+                # Always fetch latest available data from Marketstack when enabled
+                if use_marketstack and cfg.marketstack.ENABLED and "close" in ds.variables:
+                    # #region agent log
+                    try:
+                        import json
+                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                            latest_date = get_latest_quantiacs_date(ds) if hasattr(ds, 'time') else None
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "A",
+                                "location": "data_loader.py:297",
+                                "message": "Marketstack fetch check",
+                                "data": {
+                                    "use_marketstack": use_marketstack,
+                                    "enabled": cfg.marketstack.ENABLED,
+                                    "force_live_data": force_live_data,
+                                    "latest_date": str(latest_date) if latest_date else None,
+                                    "has_close": "close" in ds.variables
+                                },
+                                "timestamp": int(__import__('time').time() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
+                    try:
+                        # Get asset IDs from dataset
+                        dataset_assets = list(ds.asset.values)
+                        
+                        # Convert asset IDs to tickers
+                        asset_ticker_map = batch_convert_assets(dataset_assets)
+                        tickers = [ticker for ticker in asset_ticker_map.values() if ticker is not None]
+                        
+                        if tickers:
+                            # Check for missing days and fetch them
+                            lookback_days = fill_recent_days if fill_recent_days is not None else cfg.marketstack.DEFAULT_LOOKBACK_DAYS
+                            
+                            # Always check for latest data (force_live_data=True for neural_alpha)
+                            date_range = get_missing_date_range(ds, lookback_days=lookback_days, force_live_data=force_live_data)
+                            # #region agent log
+                            try:
+                                import json
+                                with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "B",
+                                        "location": "data_loader.py:311",
+                                        "message": "Gap detection result",
+                                        "data": {
+                                            "date_range": str(date_range),
+                                            "lookback_days": lookback_days,
+                                            "force_live_data": force_live_data,
+                                            "ticker_count": len(tickers)
+                                        },
+                                        "timestamp": int(__import__('time').time() * 1000)
+                                    }) + "\n")
+                            except: pass
+                            # #endregion
+                            
+                            if date_range:
+                                date_from, date_to = date_range
+                                # #region agent log
+                                try:
+                                    import json
+                                    with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "C",
+                                            "location": "data_loader.py:314",
+                                            "message": "Fetching Marketstack data",
+                                            "data": {
+                                                "date_from": date_from,
+                                                "date_to": date_to,
+                                                "is_single_date": date_from == date_to
+                                            },
+                                            "timestamp": int(__import__('time').time() * 1000)
+                                        }) + "\n")
+                                except: pass
+                                # #endregion
+                                client = MarketstackClient()
+                                
+                                # Fetch the date range (could be single day or multiple days)
+                                if date_from == date_to:
+                                    # Single date - use most_recent method for better handling
+                                    marketstack_df, fetched_date = client.fetch_most_recent_eod(
+                                        symbols=tickers,
+                                        target_date=date_from,
+                                    )
+                                    # #region agent log
+                                    try:
+                                        import json
+                                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "D",
+                                                "location": "data_loader.py:320",
+                                                "message": "Marketstack fetch result (single)",
+                                                "data": {
+                                                    "fetched_date": fetched_date,
+                                                    "row_count": len(marketstack_df),
+                                                    "dates_in_df": list(marketstack_df['date'].unique())[:10] if not marketstack_df.empty and 'date' in marketstack_df.columns else []
+                                                },
+                                                "timestamp": int(__import__('time').time() * 1000)
+                                            }) + "\n")
+                                    except: pass
+                                    # #endregion
+                                else:
+                                    # Date range - fetch all missing days
+                                    marketstack_df = client.fetch_eod_for_date_range(
+                                        symbols=tickers,
+                                        start_date=date_from,
+                                        end_date=date_to,
+                                    )
+                                    # #region agent log
+                                    try:
+                                        import json
+                                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "D",
+                                                "location": "data_loader.py:326",
+                                                "message": "Marketstack fetch result (range)",
+                                                "data": {
+                                                    "row_count": len(marketstack_df),
+                                                    "dates_in_df": list(marketstack_df['date'].unique())[:10] if not marketstack_df.empty and 'date' in marketstack_df.columns else []
+                                                },
+                                                "timestamp": int(__import__('time').time() * 1000)
+                                            }) + "\n")
+                                    except: pass
+                                    # #endregion
+                                
+                                if not marketstack_df.empty:
+                                    # Convert to xarray and merge
+                                    marketstack_ds = marketstack_to_xarray(
+                                        marketstack_df,
+                                        dataset_assets,
+                                    )
+                                    
+                                    # Merge datasets
+                                    ds_before_merge = ds
+                                    ds = merge_datasets(ds, marketstack_ds)
+                                    
+                                    # Record successful fetch with strategy context
+                                    try:
+                                        from q23.strategy.marketstack_telemetry import record_marketstack_fetch, FetchResult
+                                        record_marketstack_fetch(
+                                            strategy_id=strategy_id,
+                                            symbols_count=len(tickers),
+                                            date_from=date_from,
+                                            date_to=date_to,
+                                            fetched_date=fetched_date if date_from == date_to else None,
+                                            result=FetchResult.SUCCESS,
+                                            rows_fetched=len(marketstack_df),
+                                            duration_ms=0.0,  # Already recorded in client
+                                        )
+                                    except Exception:
+                                        pass  # Don't fail on telemetry
+                                    
+                                    # Sort by time
+                                    ds = ds.sortby('time')
+                                    
+                                    # #region agent log
+                                    try:
+                                        import json
+                                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                            latest_before = get_latest_quantiacs_date(ds_before_merge) if hasattr(ds_before_merge, 'time') else None
+                                            latest_after = get_latest_quantiacs_date(ds) if hasattr(ds, 'time') else None
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "E",
+                                                "location": "data_loader.py:340",
+                                                "message": "After merge",
+                                                "data": {
+                                                    "latest_before": str(latest_before) if latest_before else None,
+                                                    "latest_after": str(latest_after) if latest_after else None,
+                                                    "time_dim_size": ds.sizes.get('time', 0) if hasattr(ds, 'sizes') else 0,
+                                                    "strategy_id": strategy_id,
+                                                    "marketstack_fetched": True,
+                                                    "fetched_date": fetched_date if date_from == date_to else f"{date_from} to {date_to}"
+                                                },
+                                                "timestamp": int(__import__('time').time() * 1000)
+                                            }) + "\n")
+                                    except: pass
+                                    # #endregion
+                                    
+                                    import warnings
+                                    if date_from == date_to:
+                                        print(f"  ✅ Marketstack: Fetched {fetched_date} ({len(marketstack_df)} rows) for {strategy_id or 'strategy'}")
+                                        warnings.warn(
+                                            f"Fetched Marketstack data for {fetched_date}",
+                                            UserWarning,
+                                        )
+                                    else:
+                                        print(f"  ✅ Marketstack: Fetched {date_from} to {date_to} ({len(marketstack_df)} rows) for {strategy_id or 'strategy'}")
+                                        warnings.warn(
+                                            f"Fetched Marketstack data for {date_from} to {date_to}",
+                                            UserWarning,
+                                        )
+                            else:
+                                # No date range returned and force_live_data is False
+                                # #region agent log
+                                try:
+                                    import json
+                                    with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "B",
+                                            "location": "data_loader.py:559",
+                                            "message": "No Marketstack fetch (no gap, force_live_data=False)",
+                                            "data": {
+                                                "force_live_data": force_live_data,
+                                                "date_range_was_none": True
+                                            },
+                                            "timestamp": int(__import__('time').time() * 1000)
+                                        }) + "\n")
+                                except: pass
+                                # #endregion
+                                # Force live data but no gap detected - fetch most recent anyway
+                                # #region agent log
+                                try:
+                                    import json
+                                    with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "B",
+                                            "location": "data_loader.py:356",
+                                            "message": "Force live data path (no gap detected)",
+                                            "data": {
+                                                "force_live_data": force_live_data,
+                                                "date_range_was_none": True
+                                            },
+                                            "timestamp": int(__import__('time').time() * 1000)
+                                        }) + "\n")
+                                except: pass
+                                # #endregion
+                                client = MarketstackClient()
+                                marketstack_df, fetched_date = client.fetch_most_recent_eod(
+                                    symbols=tickers,
+                                )
+                                # #region agent log
+                                try:
+                                    import json
+                                    with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "D",
+                                            "location": "data_loader.py:359",
+                                            "message": "Force fetch result",
+                                            "data": {
+                                                "fetched_date": fetched_date,
+                                                "row_count": len(marketstack_df),
+                                                "empty": marketstack_df.empty
+                                            },
+                                            "timestamp": int(__import__('time').time() * 1000)
+                                        }) + "\n")
+                                except: pass
+                                # #endregion
+                                
+                                if not marketstack_df.empty:
+                                    marketstack_ds = marketstack_to_xarray(
+                                        marketstack_df,
+                                        dataset_assets,
+                                    )
+                                    ds_before = ds
+                                    ds_before_force = ds
+                                    ds = merge_datasets(ds, marketstack_ds)
+                                    ds = ds.sortby('time')
+                                    
+                                    # #region agent log
+                                    try:
+                                        import json
+                                        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                            latest_before = get_latest_quantiacs_date(ds_before_force) if hasattr(ds_before_force, 'time') else None
+                                            latest_after = get_latest_quantiacs_date(ds) if hasattr(ds, 'time') else None
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "E",
+                                                "location": "data_loader.py:368",
+                                                "message": "After force merge",
+                                                "data": {
+                                                    "latest_before": str(latest_before) if latest_before else None,
+                                                    "latest_after": str(latest_after) if latest_after else None,
+                                                    "strategy_id": strategy_id,
+                                                    "marketstack_fetched": True,
+                                                    "fetched_date": fetched_date
+                                                },
+                                                "timestamp": int(__import__('time').time() * 1000)
+                                            }) + "\n")
+                                    except: pass
+                                    # #endregion
+                                    
+                                    print(f"  ✅ Marketstack: Fetched latest data {fetched_date} ({len(marketstack_df)} rows) for {strategy_id or 'strategy'}")
+                                    import warnings
+                                    warnings.warn(
+                                        f"Fetched latest Marketstack data for {fetched_date}",
+                                        UserWarning,
+                                    )
+                    except Exception as e:
+                        # If Marketstack fetch fails, log warning and continue with Quantiacs data only
+                        # #region agent log
+                        try:
+                            import json
+                            import traceback
+                            with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "C",
+                                    "location": "data_loader.py:376",
+                                    "message": "Marketstack fetch exception",
+                                    "data": {
+                                        "error": str(e),
+                                        "error_type": type(e).__name__,
+                                        "traceback": traceback.format_exc()[:500]
+                                    },
+                                    "timestamp": int(__import__('time').time() * 1000)
+                                }) + "\n")
+                        except: pass
+                        # #endregion
+                        import warnings
+                        warnings.warn(
+                            f"Failed to fetch Marketstack data: {e}. "
+                            "Continuing with Quantiacs data only.",
+                            UserWarning,
+                        )
 
                 # Save to file cache (full dataset for maximum reuse)
                 # Only cache if we have valid data
@@ -397,12 +809,27 @@ def load_market_data(
     exchanges: Optional[Sequence[str]] = None,
     pinned: Optional[Sequence[str]] = None,
     assets: Optional[Sequence[str]] = None,
+    fill_recent_days: Optional[int] = None,
+    use_marketstack: bool = True,
+    force_live_data: bool = False,
+    strategy_id: Optional[str] = None,
 ) -> MarketDataBundle:
     """High-level loader returning a normalized MarketDataBundle.
 
     Behavior:
     - If `assets` is provided: load exactly those (best-effort).
     - Else: use SPX list filtered by `exchanges` when possible (matches your v4 script).
+    - If `force_live_data` is True, always fetches latest Marketstack data for pre-market runs.
+    
+    Args:
+        min_date: Minimum date to load
+        max_date: Maximum date to load (optional)
+        exchanges: Exchange filters (optional)
+        pinned: Pinned asset IDs (optional)
+        assets: Specific asset IDs to load (optional)
+        fill_recent_days: Number of recent days to fill from Marketstack
+        use_marketstack: Enable Marketstack integration (default True)
+        force_live_data: Force fetching latest data even if no gap detected (default False)
     """
     _require_xr()
 
@@ -412,7 +839,59 @@ def load_market_data(
     if assets is None:
         assets = _load_spx_universe_ids(min_date=min_date_eff, exchanges=exchanges_eff, pinned=pinned)
 
-    ds = load_quantiacs_stocks(min_date=min_date_eff, max_date=max_date, assets=assets)
+    # #region agent log
+    try:
+        import json
+        import time
+        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "A",
+                "location": "data_loader.py:802",
+                "message": "load_market_data entry",
+                "data": {
+                    "strategy_id": strategy_id,
+                    "use_marketstack": use_marketstack,
+                    "force_live_data": force_live_data,
+                    "min_date": min_date_eff,
+                    "max_date": max_date
+                },
+                "timestamp": int(time.time() * 1000)
+            }) + "\n")
+    except: pass
+    # #endregion
+    
+    ds = load_quantiacs_stocks(
+        min_date=min_date_eff,
+        max_date=max_date,
+        assets=assets,
+        fill_recent_days=fill_recent_days,
+        use_marketstack=use_marketstack,
+        force_live_data=force_live_data,
+        strategy_id=strategy_id,
+    )
+    
+    # #region agent log
+    try:
+        import json
+        import time
+        latest_date = get_latest_quantiacs_date(ds) if hasattr(ds, 'time') else None
+        with open('/Users/svenbenson/Q23_QUANT_SYSTEM 2/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "A",
+                "location": "data_loader.py:820",
+                "message": "load_quantiacs_stocks returned",
+                "data": {
+                    "latest_date": str(latest_date) if latest_date else None,
+                    "time_dim_size": ds.sizes.get('time', 0) if hasattr(ds, 'sizes') else 0
+                },
+                "timestamp": int(time.time() * 1000)
+            }) + "\n")
+    except: pass
+    # #endregion
 
     # Ensure required vars exist (some loaders may return only a subset)
     need = {"open", "high", "low", "close", "vol"}
@@ -435,13 +914,43 @@ def load_market_data(
     asset_ids = list(map(str, ds.asset.values))
     pin_idx = pinned_indices(asset_ids, pinned=pinned)
 
+    # Get latest date from dataset
+    latest_date_str = None
+    if ds.sizes.get("time", 0) > 0:
+        try:
+            latest_date = get_latest_quantiacs_date(ds)
+            if latest_date:
+                latest_date_str = latest_date.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    
+    # Check if Marketstack was used
+    marketstack_used = False
+    marketstack_fetched_date = None
+    if use_marketstack and cfg.marketstack.ENABLED:
+        try:
+            from q23.strategy.marketstack_telemetry import get_telemetry_manager
+            tel = get_telemetry_manager().get_telemetry()
+            if tel.last_fetch and tel.last_fetch.strategy_id == strategy_id:
+                marketstack_used = tel.last_fetch.result.value == "success"
+                marketstack_fetched_date = tel.last_fetch.fetched_date
+        except Exception:
+            pass
+    
     meta = {
         "min_date": min_date_eff,
         "max_date": max_date,
+        "latest_date": latest_date_str,  # Actual latest date in dataset
         "n_assets": int(ds.sizes.get("asset", 0)),
         "n_days": int(ds.sizes.get("time", 0)),
         "exchanges": exchanges_eff,
         "assets_mode": "explicit" if assets is not None else "spx_list",
+        "marketstack": {
+            "enabled": use_marketstack and cfg.marketstack.ENABLED,
+            "used": marketstack_used,
+            "fetched_date": marketstack_fetched_date,
+            "force_live_data": force_live_data,
+        },
     }
 
     return MarketDataBundle(

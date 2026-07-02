@@ -74,6 +74,7 @@ class StrategyBase(ABC):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         pass
     

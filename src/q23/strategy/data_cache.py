@@ -20,15 +20,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+from q23.strategy.data_gap_detector import (
+    get_latest_quantiacs_date,
+    get_most_recent_trading_day,
+)
+
 try:
     import xarray as xr  # type: ignore
+    import pandas as pd  # type: ignore
 except ImportError:
     xr = None
+    pd = None
 
 
 def _require_xr() -> None:
     if xr is None:
         raise ImportError("xarray is required for q23.strategy.data_cache")
+
+
+def _require_pd() -> None:
+    if pd is None:
+        raise ImportError("pandas is required for Marketstack refresh detection")
 
 
 def _get_project_root() -> Path:
@@ -169,6 +181,20 @@ def load_cached_data(index_type: str) -> Optional["xr.Dataset"]:
             pass
         return None
     
+    # Validate recency (if stale, treat as invalid so we re-fetch)
+    try:
+        latest_date = get_latest_quantiacs_date(ds)
+        target_date = get_most_recent_trading_day()
+        if latest_date is None or (latest_date.normalize() < target_date.normalize()):
+            print(
+                f"Warning: Cache for {index_type} is stale "
+                f"(latest={latest_date}, target={target_date}), will re-fetch"
+            )
+            return None
+    except Exception:
+        # If we can't determine recency, keep cache to avoid blocking runs
+        pass
+
     return ds
 
 
@@ -389,6 +415,41 @@ def clear_all_cache() -> bool:
             return False
     
     return False
+
+
+def is_marketstack_refresh_needed(
+    cached_ds: "xr.Dataset",
+    lookback_days: Optional[int] = None,
+) -> bool:
+    """Check if cached dataset needs Marketstack refresh for recent days.
+    
+    Args:
+        cached_ds: Cached xarray Dataset
+        lookback_days: Maximum number of days to look back (defaults to cfg.marketstack.DEFAULT_LOOKBACK_DAYS)
+    
+    Returns:
+        True if Marketstack refresh is needed, False otherwise
+    """
+    _require_xr()
+    _require_pd()
+    
+    if cached_ds is None or 'time' not in cached_ds.dims:
+        return False
+    
+    if cached_ds.sizes.get('time', 0) == 0:
+        return False
+    
+    try:
+        from q23.strategy.data_gap_detector import should_fetch_marketstack
+        from q23.shared.config import cfg
+        
+        if lookback_days is None:
+            lookback_days = cfg.marketstack.DEFAULT_LOOKBACK_DAYS
+        
+        return should_fetch_marketstack(cached_ds, lookback_days=lookback_days)
+    except Exception:
+        # If we can't determine, assume refresh not needed
+        return False
 
 
 def validate_and_repair_cache() -> dict:

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+import warnings
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.optimize import minimize
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, r2_score
 
 from q23.shared.config import TransactionCostConfig, TransactionCostScheme
 from q23.strategy.transaction_costs import (
@@ -283,6 +288,217 @@ class CapacityEstimator:
             "capacity_multiple": float(min_ratio),
             "most_constrained_stock": capacity_ratios.idxmin(),
         }
+
+
+class PredictiveReturnForecaster:
+    """
+    ML-based return forecasting using factor exposures and historical data.
+    Uses ensemble methods (Random Forest + Gradient Boosting) for robust predictions.
+    """
+
+    def __init__(self, lookback_window: int = 252):
+        self.lookback_window = lookback_window
+        self.models = {}
+        self.scalers = {}
+        self.feature_importance = {}
+
+    def prepare_features(
+        self,
+        returns: pd.Series,
+        exposures: pd.DataFrame,
+        macro_data: Optional[pd.DataFrame] = None
+    ) -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Prepare feature matrix for ML models.
+
+        Features include:
+        - Lagged returns (1-5 days)
+        - Rolling statistics (mean, std, skew, kurtosis)
+        - Factor exposures (normalized)
+        - Macro indicators (if available)
+        """
+        features = []
+
+        # Return-based features
+        for lag in [1, 2, 3, 5]:
+            features.append(returns.shift(lag).rename(f'return_lag_{lag}d'))
+
+        # Rolling statistics
+        for window in [21, 63, 126]:  # ~1M, ~3M, ~6M
+            roll_mean = returns.rolling(window).mean()
+            roll_std = returns.rolling(window).std()
+            roll_skew = returns.rolling(window).apply(lambda x: stats.skew(x.dropna()) if len(x.dropna()) > 2 else 0)
+            roll_kurt = returns.rolling(window).apply(lambda x: stats.kurtosis(x.dropna()) if len(x.dropna()) > 2 else 0)
+
+            features.extend([
+                roll_mean.rename(f'return_mean_{window}d'),
+                roll_std.rename(f'return_std_{window}d'),
+                roll_skew.rename(f'return_skew_{window}d'),
+                roll_kurt.rename(f'return_kurt_{window}d')
+            ])
+
+        # Factor exposures (normalized)
+        if exposures is not None:
+            exp_norm = exposures.div(exposures.abs().sum(axis=1), axis=0)
+            features.extend([
+                exp_norm.shift(1).rename(columns=lambda x: f'{x}_lag1d'),
+                exp_norm.rolling(21).mean().rename(columns=lambda x: f'{x}_mean21d')
+            ])
+
+        # Macro data
+        if macro_data is not None:
+            features.extend([
+                macro_data.shift(1).rename(columns=lambda x: f'macro_{x}_lag1d')
+            ])
+
+        feature_df = pd.concat(features, axis=1).dropna()
+
+        # Target: next day return
+        target = returns.shift(-1).loc[feature_df.index]
+
+        return feature_df, target
+
+    def train_models(
+        self,
+        features: pd.DataFrame,
+        target: pd.Series,
+        test_size: float = 0.2
+    ) -> Dict[str, Dict]:
+        """
+        Train ensemble of ML models with time-series cross-validation.
+        """
+        split_idx = int(len(features) * (1 - test_size))
+
+        X_train = features.iloc[:split_idx]
+        y_train = target.iloc[:split_idx]
+        X_test = features.iloc[split_idx:]
+        y_test = target.iloc[split_idx:]
+
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = pd.DataFrame(
+            scaler.fit_transform(X_train),
+            columns=X_train.columns,
+            index=X_train.index
+        )
+        X_test_scaled = pd.DataFrame(
+            scaler.transform(X_test),
+            columns=X_test.columns,
+            index=X_test.index
+        )
+
+        models = {
+            'rf': RandomForestRegressor(
+                n_estimators=100,
+                max_depth=10,
+                random_state=42,
+                n_jobs=-1
+            ),
+            'gb': GradientBoostingRegressor(
+                n_estimators=100,
+                max_depth=6,
+                random_state=42
+            )
+        }
+
+        results = {}
+
+        for name, model in models.items():
+            # Train model
+            model.fit(X_train_scaled, y_train)
+
+            # Predictions
+            train_pred = model.predict(X_train_scaled)
+            test_pred = model.predict(X_test_scaled)
+
+            # Metrics
+            results[name] = {
+                'model': model,
+                'train_r2': r2_score(y_train, train_pred),
+                'test_r2': r2_score(y_test, test_pred),
+                'train_rmse': np.sqrt(mean_squared_error(y_train, train_pred)),
+                'test_rmse': np.sqrt(mean_squared_error(y_test, test_pred)),
+                'feature_importance': dict(zip(features.columns,
+                                             model.feature_importances_ if hasattr(model, 'feature_importances_')
+                                             else np.zeros(len(features.columns))))
+            }
+
+        self.models = {name: result['model'] for name, result in results.items()}
+        self.scalers = {'main': scaler}
+        self.feature_importance = {name: result['feature_importance'] for name, result in results.items()}
+
+        return results
+
+    def forecast_returns(
+        self,
+        features: pd.DataFrame,
+        ensemble_weight: float = 0.5
+    ) -> pd.Series:
+        """
+        Generate return forecasts using trained ensemble.
+        """
+        if not self.models:
+            raise ValueError("Models not trained. Call train_models() first.")
+
+        if 'main' not in self.scalers:
+            raise ValueError("Scaler not found. Call train_models() first.")
+
+        # Scale features
+        features_scaled = pd.DataFrame(
+            self.scalers['main'].transform(features),
+            columns=features.columns,
+            index=features.index
+        )
+
+        # Get predictions from both models
+        rf_pred = self.models['rf'].predict(features_scaled)
+        gb_pred = self.models['gb'].predict(features_scaled)
+
+        # Ensemble prediction
+        ensemble_pred = (ensemble_weight * rf_pred + (1 - ensemble_weight) * gb_pred)
+
+        return pd.Series(ensemble_pred, index=features.index)
+
+    def get_prediction_confidence(
+        self,
+        features: pd.DataFrame,
+        n_bootstraps: int = 100
+    ) -> pd.DataFrame:
+        """
+        Estimate prediction confidence using bootstrapping.
+        """
+        if not self.models:
+            raise ValueError("Models not trained.")
+
+        predictions = []
+
+        for _ in range(n_bootstraps):
+            # Bootstrap sample indices
+            indices = np.random.choice(len(features), len(features), replace=True)
+            sample_features = features.iloc[indices]
+
+            sample_scaled = pd.DataFrame(
+                self.scalers['main'].transform(sample_features),
+                columns=sample_features.columns,
+                index=sample_features.index
+            )
+
+            rf_pred = self.models['rf'].predict(sample_scaled)
+            gb_pred = self.models['gb'].predict(sample_scaled)
+            ensemble_pred = 0.5 * rf_pred + 0.5 * gb_pred
+
+            predictions.append(ensemble_pred)
+
+        predictions = np.array(predictions)
+
+        return pd.DataFrame({
+            'mean': np.mean(predictions, axis=0),
+            'std': np.std(predictions, axis=0),
+            'lower_95': np.percentile(predictions, 2.5, axis=0),
+            'upper_95': np.percentile(predictions, 97.5, axis=0),
+            'lower_80': np.percentile(predictions, 10, axis=0),
+            'upper_80': np.percentile(predictions, 90, axis=0)
+        }, index=features.index)
 
 
 class TransactionCostAnalyzer:

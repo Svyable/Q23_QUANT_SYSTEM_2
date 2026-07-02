@@ -69,8 +69,6 @@ export PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 
 # Strategy toggles (defaults)
-# Legacy StrategyEngine (backward compatibility - DEPRECATED)
-export Q23_RUN_V4="${Q23_RUN_V4:-false}"
 # NOTE: Strategy enabling is now done via enabled_strategies.json (managed by Strategy Warehouse dashboard)
 # Environment variables Q23_RUN_<strategy_id> are deprecated but still work for backward compatibility
 # Examples (DEPRECATED): Q23_RUN_NASNYS_V4, Q23_RUN_QS23_HYBRID_ALPHA, Q23_RUN_Q23_COMPOSER_V1

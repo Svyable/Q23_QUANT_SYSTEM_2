@@ -440,62 +440,35 @@ def _run_strategy_with_params(
         Tuple of (success: bool, message: str)
     """
     try:
-        from q23.strategy.factors import FactorParams
-        from q23.strategy.ic_weighting import ICWeightingParams
-        from q23.strategy.portfolio import PortfolioParams
-        from q23.strategy.outputs import OutputWriter
+        # Require a base strategy - no legacy fallback
+        if not base_strategy or base_strategy == "(blank)":
+            return False, "Please select a base strategy from the dropdown. Legacy StrategyEngine is no longer supported."
         
-        # Use the appropriate strategy engine
-        if base_strategy and base_strategy != "(blank)":
-            # Run using registered strategy with overridden params
-            from q23.strategies.registry import StrategyRegistry
+        # Run using registered strategy
+        from q23.strategies.registry import StrategyRegistry
+        
+        strategy = StrategyRegistry.get_instance(base_strategy)
+        
+        # Override strategy parameters with UI settings
+        # Create parameter overrides for the strategy run
+        param_overrides = {}
+
+        # Factor selection override
+        if factors:
+            param_overrides['factors'] = factors
+
+        # Portfolio parameter overrides
+        for key, value in params.items():
+            if key in ['long_only', 'long_seats', 'short_seats', 'max_pos', 'min_pos',
+                      'topn_base', 'topn_vol', 'target_vol', 'w_smooth', 'softmax_alpha']:
+                param_overrides[key] = value
+
+        # Run strategy with parameter overrides
+        artifacts = strategy.run(tag=tag, write_outputs=True, **param_overrides)
+        return True, f"Strategy '{base_strategy}' executed with tag: {tag}"
             
-            strategy = StrategyRegistry.get_instance(base_strategy)
-            
-            # For now, run the base strategy with the tag
-            # TODO: Override params in the strategy run
-            artifacts = strategy.run(tag=tag, write_outputs=True)
-            return True, f"Strategy '{base_strategy}' executed with tag: {tag}"
-        else:
-            # Run using legacy StrategyEngine
-            from q23.strategy.engine import StrategyEngine
-            
-            fparams = FactorParams(eps=float(cfg.strategy.EPS), robust_cs_z=True)
-            iparams = ICWeightingParams(lam=0.95, eps=float(cfg.strategy.EPS))
-            pparams = PortfolioParams(
-                max_pos=float(params["max_pos"]),
-                min_pos=float(params["min_pos"]),
-                eps=float(cfg.strategy.EPS),
-                topn_base=int(params["topn_base"]),
-                topn_volatile=int(params["topn_vol"]),
-                score_smooth_win=int(cfg.strategy.SCORE_SMOOTH_WIN),
-                weight_smooth_alpha=float(params["w_smooth"]),
-                softmax_tilt_alpha=float(params["softmax_alpha"]),
-                use_equal_topk=False,
-                long_seats=int(params["long_seats"]),
-                short_seats=int(params["short_seats"]),
-                fixed_long_frac=0.6,
-                side_split_mode="fixed" if params["long_only"] else "prop_mass",
-                budget_mode="vol_target",
-                pm_gross_target=1.0,
-                target_vol_base=float(params["target_vol"]),
-                target_vol_volatile=float(params["target_vol"]) * 0.7,
-                lev_cap=float(params["lev_cap"]),
-                lev_min=float(params["lev_min"]),
-            )
-            
-            pin_list = [x.strip() for x in params["pins"].split(",") if x.strip()]
-            
-            eng = StrategyEngine(
-                factor_params=fparams,
-                ic_params=iparams,
-                portfolio_params=pparams,
-                factors=factors if factors else list(V4_24_FACTORS),
-            )
-            
-            eng.run(pinned=pin_list, exchanges=None, tag=tag)
-            return True, f"Strategy executed with tag: {tag}"
-            
+    except KeyError as e:
+        return False, f"Strategy '{base_strategy}' not found in registry: {str(e)}"
     except Exception as e:
         return False, f"Strategy run failed: {str(e)}"
 
@@ -504,9 +477,12 @@ def _run_strategy_with_params(
 # SAVE OPTIONS UI
 # =============================================================================
 
-def _render_save_options() -> Tuple[str, str, bool]:
+def _render_save_options(base_strategy: str) -> Tuple[str, str, bool]:
     """
     Render save options and return (mode, name, should_run).
+    
+    Args:
+        base_strategy: The currently selected base strategy
     
     Returns:
         Tuple of (save_mode, strategy_name, should_run_now)
@@ -578,6 +554,10 @@ def _render_save_options() -> Tuple[str, str, bool]:
         can_run = True
         if save_mode == "permanent" and not strategy_name:
             can_run = False
+        if save_mode == "ephemeral" and (not base_strategy or base_strategy == "(blank)"):
+            can_run = False
+            if not base_strategy or base_strategy == "(blank)":
+                st.caption("⚠️ Select a base strategy for ephemeral runs")
         if len(st.session_state.live_selected_factors) == 0:
             can_run = False
         
@@ -684,10 +664,12 @@ def render_live_strategy_page(preset_dir: Path) -> None:
     # =========================================================================
     # SAVE & RUN OPTIONS
     # =========================================================================
-    save_mode, strategy_name, should_run = _render_save_options()
+    save_mode, strategy_name, should_run = _render_save_options(base_strategy)
     
     # Execute run if button pressed
     if should_run:
+        strategy_to_run = base_strategy if base_strategy != "(blank)" else None
+        
         if save_mode == "permanent" and strategy_name:
             # Generate strategy code first
             with st.spinner("🔨 Generating strategy code..."):
@@ -703,28 +685,59 @@ def render_live_strategy_page(preset_dir: Path) -> None:
                     )
                     st.success(f"✅ Strategy code generated at: `{strategy_dir}`")
                     
+                    # Try to dynamically import and register the new strategy
+                    try:
+                        import importlib
+                        from q23.strategies.registry import StrategyRegistry
+                        
+                        # Reset registry initialization to force re-discovery
+                        StrategyRegistry._initialized = False
+                        
+                        # Import the new strategy module
+                        module_name = f"q23.strategies.{strategy_dir.name}"
+                        importlib.import_module(module_name)
+                        
+                        # Use the newly generated strategy
+                        strategy_to_run = strategy_dir.name
+                        st.info(f"📦 Strategy '{strategy_to_run}' registered and ready to run")
+                    except Exception as import_err:
+                        st.warning(
+                            f"⚠️ Strategy generated but could not be auto-registered: {import_err}. "
+                            f"Please restart the dashboard to use strategy '{strategy_dir.name}'."
+                        )
+                        # Can't run without registration
+                        strategy_to_run = None
+                    
                 except ImportError:
-                    st.warning("Strategy generator not available. Running with legacy engine...")
+                    st.warning("Strategy generator not available.")
+                    st.stop()
                 except Exception as e:
                     st.error(f"Failed to generate strategy: {e}")
                     st.stop()
         
         # Run the strategy
-        with st.spinner("🔄 Running strategy backtest... This may take several minutes."):
-            tag = _generate_run_tag(strategy_name, ephemeral=(save_mode == "ephemeral"))
-            success, message = _run_strategy_with_params(
-                factors=factors,
-                params=params,
-                base_strategy=base_strategy if base_strategy != "(blank)" else None,
-                tag=tag,
-            )
-            
-            if success:
-                st.success(f"✅ {message}")
-                st.info(f"📍 Tag: `{tag}` - Switch to Overview or refresh to see results.")
-                st.balloons()
-            else:
-                st.error(f"❌ {message}")
+        if strategy_to_run:
+            with st.spinner("🔄 Running strategy backtest... This may take several minutes."):
+                tag = _generate_run_tag(strategy_name, ephemeral=(save_mode == "ephemeral"))
+                success, message = _run_strategy_with_params(
+                    factors=factors,
+                    params=params,
+                    base_strategy=strategy_to_run,
+                    tag=tag,
+                )
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    st.info(f"📍 Tag: `{tag}` - Switch to Overview or refresh to see results.")
+                    st.balloons()
+                else:
+                    st.error(f"❌ {message}")
+        elif save_mode == "permanent":
+            # Strategy was generated but not registered - user needs to restart
+            st.info("💡 Strategy code has been generated. Please restart the dashboard to run it, or select a base strategy for ephemeral runs.")
+        else:
+            # Ephemeral run without base strategy - should have been prevented by UI
+            st.error("❌ Please select a base strategy from the dropdown. Ephemeral runs require a base strategy.")
     
     # =========================================================================
     # CONFIGURATION SUMMARY

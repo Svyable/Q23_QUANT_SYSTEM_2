@@ -14,6 +14,7 @@ from q23.strategies.base import StrategyBase, StrategyConfig, StrategyArtifacts
 from q23.strategies.registry import StrategyRegistry
 from q23.strategies.q23_composer_v2.config import composer_v2_config, COMPOSER_V2_FACTORS
 from q23.strategy.outputs import OutputWriter
+from q23.shared import config as global_config
 from q23.strategy.factors import FactorLibrary, FactorParams
 from q23.strategy.ic_weighting import DynamicICWeighting, ICWeightingParams
 from q23.strategy.portfolio import PortfolioConstructor, PortfolioParams
@@ -83,6 +84,7 @@ class Q23ComposerV2Strategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -103,6 +105,10 @@ class Q23ComposerV2Strategy(StrategyBase):
             max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

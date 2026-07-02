@@ -224,7 +224,7 @@ def _compute_concentration_by_side(weights: pd.DataFrame) -> Dict[str, float]:
 # Visualization Functions
 # =============================================================================
 
-def _create_exposure_time_series_chart(exposure_df: pd.DataFrame, height: int = 400) -> Optional[object]:
+def _create_exposure_time_series_chart(exposure_df: pd.DataFrame, height: Optional[int] = None) -> Optional[object]:
     """Create main exposure time series chart with unified hover."""
     if not PLOTLY_AVAILABLE or exposure_df.empty:
         return None
@@ -279,41 +279,44 @@ def _create_exposure_time_series_chart(exposure_df: pd.DataFrame, height: int = 
     # Zero line
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
     
-    fig.update_layout(
-        title={"text": "Exposure Over Time", "font": {"size": 16, "color": BIAS_COLORS["text"]}},
-        paper_bgcolor=BIAS_COLORS["background"],
-        plot_bgcolor=BIAS_COLORS["card"],
-        font={"color": BIAS_COLORS["text"], "size": 11},
-        height=height,
-        showlegend=False,  # Clean - tooltips show all
-        xaxis={"gridcolor": BIAS_COLORS["grid"]},
-        yaxis={
+    layout = {
+        "title": {"text": "Exposure Over Time", "font": {"size": 16, "color": BIAS_COLORS["text"]}},
+        "paper_bgcolor": BIAS_COLORS["background"],
+        "plot_bgcolor": BIAS_COLORS["card"],
+        "font": {"color": BIAS_COLORS["text"], "size": 11},
+        "autosize": True,
+        "showlegend": False,  # Clean - tooltips show all
+        "xaxis": {"gridcolor": BIAS_COLORS["grid"]},
+        "yaxis": {
             "title": "Net Exposure",
             "gridcolor": BIAS_COLORS["grid"],
             "tickformat": ".0%",
             "zeroline": True,
             "zerolinecolor": "rgba(255,255,255,0.3)",
         },
-        yaxis2={
+        "yaxis2": {
             "title": "Gross Exposure",
             "overlaying": "y",
             "side": "right",
             "tickformat": ".0%",
             "showgrid": False,
         },
-        hovermode="x unified",
-        hoverlabel={
+        "hovermode": "x unified",
+        "hoverlabel": {
             "bgcolor": "#1e1e1e",
             "bordercolor": "#444",
             "font": {"size": 12, "color": BIAS_COLORS["text"]},
         },
-        margin={"l": 60, "r": 60, "t": 50, "b": 40},
-    )
+        "margin": {"l": 60, "r": 60, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_long_short_area_chart(exposure_df: pd.DataFrame, height: int = 300) -> Optional[object]:
+def _create_long_short_area_chart(exposure_df: pd.DataFrame, height: Optional[int] = None) -> Optional[object]:
     """Create stacked area chart showing long vs short."""
     if not PLOTLY_AVAILABLE or exposure_df.empty:
         return None
@@ -344,24 +347,27 @@ def _create_long_short_area_chart(exposure_df: pd.DataFrame, height: int = 300) 
         hovertemplate="Short: %{y:.1%}",
     ))
     
-    fig.update_layout(
-        title={"text": "Long vs Short Exposure", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
-        paper_bgcolor=BIAS_COLORS["background"],
-        plot_bgcolor=BIAS_COLORS["card"],
-        font={"color": BIAS_COLORS["text"]},
-        height=height,
-        showlegend=False,
-        xaxis={"gridcolor": BIAS_COLORS["grid"]},
-        yaxis={"title": "Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
-        hovermode="x unified",
-        hoverlabel={"bgcolor": "#1e1e1e", "font": {"color": BIAS_COLORS["text"]}},
-        margin={"l": 50, "r": 20, "t": 50, "b": 40},
-    )
+    layout = {
+        "title": {"text": "Long vs Short Exposure", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
+        "paper_bgcolor": BIAS_COLORS["background"],
+        "plot_bgcolor": BIAS_COLORS["card"],
+        "font": {"color": BIAS_COLORS["text"]},
+        "autosize": True,
+        "showlegend": False,
+        "xaxis": {"gridcolor": BIAS_COLORS["grid"]},
+        "yaxis": {"title": "Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
+        "hovermode": "x unified",
+        "hoverlabel": {"bgcolor": "#1e1e1e", "font": {"color": BIAS_COLORS["text"]}},
+        "margin": {"l": 50, "r": 20, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_position_count_chart(exposure_df: pd.DataFrame, height: int = 250) -> Optional[object]:
+def _create_position_count_chart(exposure_df: pd.DataFrame, height: Optional[int] = None) -> Optional[object]:
     """Create position count chart."""
     if not PLOTLY_AVAILABLE or exposure_df.empty:
         return None
@@ -407,7 +413,7 @@ def _create_position_count_chart(exposure_df: pd.DataFrame, height: int = 250) -
     return fig
 
 
-def _create_net_exposure_histogram(exposure_df: pd.DataFrame, height: int = 250) -> Optional[object]:
+def _create_net_exposure_histogram(exposure_df: pd.DataFrame, height: Optional[int] = None) -> Optional[object]:
     """Create histogram of net exposure distribution."""
     if not PLOTLY_AVAILABLE or exposure_df.empty:
         return None
@@ -434,21 +440,24 @@ def _create_net_exposure_histogram(exposure_df: pd.DataFrame, height: int = 250)
         annotation_position="top",
     )
     
-    fig.update_layout(
-        title={"text": "Net Exposure Distribution", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
-        paper_bgcolor=BIAS_COLORS["background"],
-        plot_bgcolor=BIAS_COLORS["card"],
-        font={"color": BIAS_COLORS["text"]},
-        height=height,
-        xaxis={"title": "Net Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
-        yaxis={"title": "Frequency", "gridcolor": BIAS_COLORS["grid"]},
-        margin={"l": 50, "r": 20, "t": 50, "b": 40},
-    )
+    layout = {
+        "title": {"text": "Net Exposure Distribution", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
+        "paper_bgcolor": BIAS_COLORS["background"],
+        "plot_bgcolor": BIAS_COLORS["card"],
+        "font": {"color": BIAS_COLORS["text"]},
+        "autosize": True,
+        "xaxis": {"title": "Net Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
+        "yaxis": {"title": "Frequency", "gridcolor": BIAS_COLORS["grid"]},
+        "margin": {"l": 50, "r": 20, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_bias_gauge(current_net: float, height: int = 200) -> Optional[object]:
+def _create_bias_gauge(current_net: float, height: Optional[int] = None) -> Optional[object]:
     """Create a gauge showing current bias level."""
     if not PLOTLY_AVAILABLE:
         return None
@@ -488,17 +497,74 @@ def _create_bias_gauge(current_net: float, height: int = 200) -> Optional[object
         },
     ))
     
-    fig.update_layout(
-        paper_bgcolor=BIAS_COLORS["background"],
-        font={"color": BIAS_COLORS["text"]},
-        height=height,
-        margin={"l": 30, "r": 30, "t": 50, "b": 20},
-    )
+    layout = {
+        "paper_bgcolor": BIAS_COLORS["background"],
+        "font": {"color": BIAS_COLORS["text"]},
+        "autosize": True,
+        "margin": {"l": 30, "r": 30, "t": 50, "b": 20},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_rolling_bias_chart(exposure_df: pd.DataFrame, window: int = 21, height: int = 250) -> Optional[object]:
+def _generate_bias_csv(
+    exposure_df: pd.DataFrame,
+    current_metrics: ExposureMetrics,
+    historical_stats: ExposureStats,
+    concentration: Dict[str, float],
+) -> str:
+    """
+    Generate CSV export of bias analysis data.
+    
+    Args:
+        exposure_df: Time series exposure DataFrame
+        current_metrics: Current exposure snapshot
+        historical_stats: Historical stats
+        concentration: Concentration metrics
+        
+    Returns:
+        CSV string
+    """
+    # Summary section
+    summary_rows = [
+        {"Metric": "Current Net Exposure", "Value": f"{current_metrics.net_exposure:.2%}"},
+        {"Metric": "Current Long Exposure", "Value": f"{current_metrics.long_exposure:.2%}"},
+        {"Metric": "Current Short Exposure", "Value": f"{current_metrics.short_exposure:.2%}"},
+        {"Metric": "Current Gross Exposure", "Value": f"{current_metrics.gross_exposure:.2%}"},
+        {"Metric": "Long Positions", "Value": str(current_metrics.long_count)},
+        {"Metric": "Short Positions", "Value": str(current_metrics.short_count)},
+        {"Metric": "L/S Ratio", "Value": f"{current_metrics.long_short_ratio:.2f}"},
+        {"Metric": "Avg Net (Historical)", "Value": f"{historical_stats.avg_net:.2%}"},
+        {"Metric": "Std Net (Historical)", "Value": f"{historical_stats.std_net:.2%}"},
+        {"Metric": "Net Z-Score", "Value": f"{historical_stats.net_zscore:.2f}"},
+        {"Metric": "Regime", "Value": historical_stats.regime},
+        {"Metric": "Long HHI", "Value": f"{concentration['long_hhi']:.4f}"},
+        {"Metric": "Short HHI", "Value": f"{concentration['short_hhi']:.4f}"},
+        {"Metric": "Long Top5 Conc", "Value": f"{concentration['long_top5']:.2%}"},
+        {"Metric": "Short Top5 Conc", "Value": f"{concentration['short_top5']:.2%}"},
+    ]
+    
+    summary_df = pd.DataFrame(summary_rows)
+    
+    # Time series data
+    ts_df = exposure_df.copy()
+    ts_df.index.name = "Date"
+    ts_df = ts_df.reset_index()
+    
+    # Combine into single CSV with sections
+    csv_parts = []
+    csv_parts.append("# BIAS ANALYSIS SUMMARY")
+    csv_parts.append(summary_df.to_csv(index=False))
+    csv_parts.append("\n# TIME SERIES DATA")
+    csv_parts.append(ts_df.to_csv(index=False))
+    
+    return "\n".join(csv_parts)
+
+
+def _create_rolling_bias_chart(exposure_df: pd.DataFrame, window: int = 21, height: Optional[int] = None) -> Optional[object]:
     """Create rolling average bias chart."""
     if not PLOTLY_AVAILABLE or exposure_df.empty or len(exposure_df) < window:
         return None
@@ -536,19 +602,22 @@ def _create_rolling_bias_chart(exposure_df: pd.DataFrame, window: int = 21, heig
                   annotation_text="Full Long")
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255, 255, 255, 0.3)")
     
-    fig.update_layout(
-        title={"text": f"Rolling {window}-Day Average Bias", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
-        paper_bgcolor=BIAS_COLORS["background"],
-        plot_bgcolor=BIAS_COLORS["card"],
-        font={"color": BIAS_COLORS["text"]},
-        height=height,
-        showlegend=False,
-        xaxis={"gridcolor": BIAS_COLORS["grid"]},
-        yaxis={"title": "Net Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
-        hovermode="x unified",
-        hoverlabel={"bgcolor": "#1e1e1e", "font": {"color": BIAS_COLORS["text"]}},
-        margin={"l": 50, "r": 20, "t": 50, "b": 40},
-    )
+    layout = {
+        "title": {"text": f"Rolling {window}-Day Average Bias", "font": {"size": 14, "color": BIAS_COLORS["text"]}},
+        "paper_bgcolor": BIAS_COLORS["background"],
+        "plot_bgcolor": BIAS_COLORS["card"],
+        "font": {"color": BIAS_COLORS["text"]},
+        "autosize": True,
+        "showlegend": False,
+        "xaxis": {"gridcolor": BIAS_COLORS["grid"]},
+        "yaxis": {"title": "Net Exposure", "gridcolor": BIAS_COLORS["grid"], "tickformat": ".0%"},
+        "hovermode": "x unified",
+        "hoverlabel": {"bgcolor": "#1e1e1e", "font": {"color": BIAS_COLORS["text"]}},
+        "margin": {"l": 50, "r": 20, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
@@ -566,7 +635,10 @@ def render_bias_page(data: DashboardData) -> None:
     Args:
         data: Dashboard data bundle
     """
-    st.subheader("⚖️ Bias Analysis")
+    # Header with download button
+    header_col1, header_col2 = st.columns([4, 1])
+    with header_col1:
+        st.subheader("⚖️ Bias Analysis")
     
     st.markdown("""
     Comprehensive Long/Short exposure analysis. Track portfolio bias evolution,
@@ -584,6 +656,17 @@ def render_bias_page(data: DashboardData) -> None:
     current_metrics = _compute_current_metrics(data.weights)
     historical_stats = _compute_historical_stats(exposure_df)
     concentration = _compute_concentration_by_side(data.weights)
+    
+    # Add download button after data is computed
+    with header_col2:
+        csv_data = _generate_bias_csv(exposure_df, current_metrics, historical_stats, concentration)
+        st.download_button(
+            label="📥 Export",
+            data=csv_data,
+            file_name="bias_analysis.csv",
+            mime="text/csv",
+            help="Download bias analysis data as CSV",
+        )
     
     # ==========================================================================
     # CURRENT SNAPSHOT
@@ -638,9 +721,9 @@ def render_bias_page(data: DashboardData) -> None:
     st.markdown("### 📈 Exposure Evolution")
     
     if PLOTLY_AVAILABLE:
-        fig = _create_exposure_time_series_chart(exposure_df.tail(500), height=380)
+        fig = _create_exposure_time_series_chart(exposure_df.tail(500))
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
     else:
         st.line_chart(exposure_df[["long", "short", "net", "gross"]].tail(500), height=350)
     
@@ -656,9 +739,9 @@ def render_bias_page(data: DashboardData) -> None:
         st.markdown("### 📊 Long vs Short Breakdown")
         
         if PLOTLY_AVAILABLE:
-            fig = _create_long_short_area_chart(exposure_df.tail(500), height=280)
+            fig = _create_long_short_area_chart(exposure_df.tail(500))
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             st.line_chart(exposure_df[["long", "short"]].tail(500), height=250)
         
@@ -666,9 +749,9 @@ def render_bias_page(data: DashboardData) -> None:
         st.markdown("### 🔢 Position Counts")
         
         if PLOTLY_AVAILABLE:
-            fig = _create_position_count_chart(exposure_df.tail(500), height=220)
+            fig = _create_position_count_chart(exposure_df.tail(500))
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             st.line_chart(exposure_df[["long_count", "short_count"]].tail(500), height=200)
     
@@ -677,9 +760,9 @@ def render_bias_page(data: DashboardData) -> None:
         st.markdown("### 🎯 Current Bias")
         
         if PLOTLY_AVAILABLE:
-            fig = _create_bias_gauge(current_metrics.net_exposure, height=200)
+            fig = _create_bias_gauge(current_metrics.net_exposure)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             bias_pct = current_metrics.net_exposure * 100
             if bias_pct > 80:
@@ -693,9 +776,9 @@ def render_bias_page(data: DashboardData) -> None:
         st.markdown("### 📉 Bias Distribution")
         
         if PLOTLY_AVAILABLE:
-            fig = _create_net_exposure_histogram(exposure_df.tail(252), height=220)
+            fig = _create_net_exposure_histogram(exposure_df.tail(252))
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             st.caption("Distribution requires Plotly")
         
@@ -712,7 +795,7 @@ def render_bias_page(data: DashboardData) -> None:
                 f"{historical_stats.avg_gross:.1%}",
             ],
         })
-        st.dataframe(stats_df, hide_index=True, use_container_width=True)
+        st.dataframe(stats_df, hide_index=True, width="stretch")
     
     st.divider()
     
@@ -725,17 +808,18 @@ def render_bias_page(data: DashboardData) -> None:
         st.markdown("### 📊 Rolling Bias Analysis")
         
         window = st.selectbox(
-            "Rolling Window",
+            "📈 Rolling Window",
             options=[5, 10, 21, 63],
             index=2,
             format_func=lambda x: f"{x} days",
             key="bias_rolling_window",
+            help="Time window for rolling bias calculations. Shorter windows show recent trends, longer windows show structural bias.",
         )
         
         if PLOTLY_AVAILABLE:
-            fig = _create_rolling_bias_chart(exposure_df.tail(500), window=window, height=280)
+            fig = _create_rolling_bias_chart(exposure_df.tail(500), window=window)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             rolling = exposure_df["net"].rolling(window).mean()
             st.line_chart(rolling.tail(500), height=250)
@@ -777,7 +861,7 @@ def render_bias_page(data: DashboardData) -> None:
             display_long = long_df.head(15).copy()
             display_long["weight"] = display_long["weight"].apply(lambda x: f"{x:.2%}")
             display_long["pct_of_long"] = display_long["pct_of_long"].apply(lambda x: f"{x:.1%}")
-            st.dataframe(display_long, hide_index=True, height=400, use_container_width=True)
+            st.dataframe(display_long, hide_index=True, height=400, width="stretch")
         else:
             st.caption("No long positions")
     
@@ -787,7 +871,7 @@ def render_bias_page(data: DashboardData) -> None:
             display_short = short_df.head(15).copy()
             display_short["weight"] = display_short["weight"].apply(lambda x: f"{x:.2%}")
             display_short["pct_of_short"] = display_short["pct_of_short"].apply(lambda x: f"{x:.1%}")
-            st.dataframe(display_short, hide_index=True, height=400, use_container_width=True)
+            st.dataframe(display_short, hide_index=True, height=400, width="stretch")
         else:
             st.caption("No short positions")
     
@@ -802,5 +886,5 @@ def render_bias_page(data: DashboardData) -> None:
         display_df["short"] = display_df["short"].apply(lambda x: f"{x:.2%}")
         display_df["net"] = display_df["net"].apply(lambda x: f"{x:.2%}")
         display_df["gross"] = display_df["gross"].apply(lambda x: f"{x:.2%}")
-        st.dataframe(display_df, use_container_width=True, height=400)
+        st.dataframe(display_df, width="stretch", height=400)
 

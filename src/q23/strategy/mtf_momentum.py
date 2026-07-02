@@ -813,9 +813,10 @@ class MTFMomentumLibrary:
         p = self.params
         
         # Normalize each return by its typical magnitude
+        # Note: xarray rolling has max window of 250, so cap YEAR at 250
         w_z = self.ret_1w / (self.ret_1w.rolling(time=p.QUARTER, min_periods=10).std() + p.eps)
         m_z = self.ret_1m / (self.ret_1m.rolling(time=p.QUARTER, min_periods=10).std() + p.eps)
-        q_z = self.ret_1q / (self.ret_1q.rolling(time=p.YEAR, min_periods=20).std() + p.eps)
+        q_z = self.ret_1q / (self.ret_1q.rolling(time=min(p.YEAR, 250), min_periods=20).std() + p.eps)
         
         # Sum of z-scores (if aligned, this is large; if mixed, cancels)
         return (w_z + m_z + q_z).fillna(0.0).clip(-10, 10)

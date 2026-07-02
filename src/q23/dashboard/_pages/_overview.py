@@ -35,6 +35,8 @@ from q23.dashboard.components.charts import (
     create_risk_gauge,
     create_sparkline,
     PM_COLORS,
+    get_plotly_config,
+    get_plotly_layout,
 )
 from q23.dashboard.analytics import (
     summary_exposure,
@@ -169,14 +171,45 @@ def _render_benchmark_selector(
     
     # Create expander for benchmark selection
     with st.expander("📊 Compare to Benchmarks", expanded=False):
-        selected = st.multiselect(
-            "Select benchmarks to overlay",
-            options=list(available.keys()),
-            format_func=lambda x: available[x],
-            default=[],
-            help="Overlay benchmark index returns on performance charts",
-            key="benchmark_comparison_select",
-        )
+        # Select all checkbox - sync with multiselect
+        all_keys = list(available.keys())
+        
+        # Initialize session state if needed
+        if "benchmark_comparison_select" not in st.session_state:
+            st.session_state.benchmark_comparison_select = []
+        if "benchmark_select_all" not in st.session_state:
+            st.session_state.benchmark_select_all = False
+        
+        # Sync checkbox with multiselect state
+        current_selection = st.session_state.get("benchmark_comparison_select", [])
+        all_selected = len(current_selection) == len(all_keys) and len(all_keys) > 0
+        
+        col_check, col_multiselect = st.columns([1, 4])
+        with col_check:
+            select_all = st.checkbox(
+                "Select All",
+                value=all_selected,
+                key="benchmark_select_all",
+                help="Quickly select/deselect all available benchmarks",
+            )
+        
+        with col_multiselect:
+            # Update selection based on checkbox
+            if select_all and not all_selected:
+                # Select all
+                st.session_state.benchmark_comparison_select = all_keys.copy()
+            elif not select_all and all_selected:
+                # Deselect all
+                st.session_state.benchmark_comparison_select = []
+            
+            selected = st.multiselect(
+                "Select benchmarks to overlay",
+                options=all_keys,
+                format_func=lambda x: available[x],
+                default=st.session_state.benchmark_comparison_select,
+                help="Overlay benchmark index returns on performance charts",
+                key="benchmark_comparison_select",
+            )
         
         if selected:
             st.caption(f"Selected: {', '.join([available[s] for s in selected])}")
@@ -246,8 +279,7 @@ def render_overview_page(
     # Render performance charts (with optional benchmark overlay)
     _render_performance_charts(data, benchmark_returns=benchmark_returns)
     
-    # Render calendar heatmap
-    _render_calendar_heatmap(ret_series)
+    # Calendar heatmap moved to dedicated page
     
     # Render risk metrics
     _render_risk_metrics(perf)
@@ -448,10 +480,10 @@ def _render_performance_charts(
         # Chart type toggle (only show if Plotly is available)
         if PLOTLY_AVAILABLE:
             use_interactive = st.checkbox(
-                "Use interactive charts",
+                "📊 Use Interactive Charts",
                 value=True,  # Default to True for better UX with hover tooltips
                 key="overview_interactive_charts",
-                help="Enable interactive Plotly charts with zoom/pan and detailed hover tooltips"
+                help="Interactive Plotly charts: zoom, pan, hover tooltips with benchmark comparisons. Static charts load faster."
             )
         else:
             use_interactive = False
@@ -582,15 +614,17 @@ def _render_cumulative_return_chart_plotly(
     """Render interactive cumulative return chart with Plotly and benchmark overlays.
     
     Features Quantiacs-style unified hover tooltip showing:
-    - Strategy PnL (green when positive, red when negative)
+    - Strategy PnL Gross (before TC)
+    - Strategy PnL Net (after TC) 
+    - Cumulative TC drag
     - Benchmark PnL (if selected)
     - Underwater (drawdown)
     - Long/Short/Net exposure
     
     Args:
-        ret_series: Strategy return series
+        ret_series: Strategy return series (net of TC if available)
         benchmark_returns: Optional dict mapping benchmark names to return series
-        diag: Optional diagnostics DataFrame with exposure data
+        diag: Optional diagnostics DataFrame with exposure data and TC columns
     """
     try:
         import plotly.graph_objects as go
@@ -598,38 +632,105 @@ def _render_cumulative_return_chart_plotly(
         st.warning("Plotly not available")
         return
     
-    cumret = (1.0 + ret_series).cumprod() - 1.0
+    # Determine if we have both gross and net returns
+    has_tc_data = False
+    gross_ret = None
+    net_ret = ret_series
+    tc_cost_series = None
+    
+    if diag is not None and not diag.empty:
+        # Check for gross returns (port_ret) and net returns (port_ret_net_tc)
+        if 'port_ret' in diag.columns:
+            gross_ret = diag['port_ret'].fillna(0.0)
+        
+        # Check for TC cost columns
+        if 'tc_cost' in diag.columns:
+            tc_cost_series = diag['tc_cost'].fillna(0.0)
+            has_tc_data = True
+        elif 'tc_cost_atr' in diag.columns:
+            tc_cost_series = diag['tc_cost_atr'].fillna(0.0)
+            has_tc_data = True
+        elif 'tc_cost_flat' in diag.columns:
+            tc_cost_series = diag['tc_cost_flat'].fillna(0.0)
+            has_tc_data = True
+        elif 'turnover' in diag.columns:
+            # Estimate TC from turnover (10 bps default)
+            tc_bps = float(getattr(cfg.strategy, "TC_BASIS_POINTS", 10.0))
+            tc_cost_series = diag['turnover'].fillna(0.0) * (tc_bps / 10000.0)
+            has_tc_data = True
+        
+        # If we have gross but ret_series is net, use gross for comparison
+        if gross_ret is not None and 'port_ret_net_tc' in diag.columns:
+            net_ret = diag['port_ret_net_tc'].fillna(0.0)
+    
+    # Compute cumulative returns
+    cumret_net = (1.0 + net_ret).cumprod() - 1.0
+    
+    if gross_ret is not None:
+        cumret_gross = (1.0 + gross_ret).cumprod() - 1.0
+    else:
+        cumret_gross = cumret_net  # Fallback if no gross available
+    
+    # Compute cumulative TC drag
+    if tc_cost_series is not None:
+        cum_tc = tc_cost_series.cumsum()
+    else:
+        cum_tc = pd.Series(0.0, index=cumret_net.index)
     
     # Compute drawdown for underwater display
-    eq = (1.0 + ret_series).cumprod()
+    eq = (1.0 + net_ret).cumprod()
     underwater = eq / eq.cummax() - 1.0
     
-    # Determine strategy color based on final return (green = positive, red = negative)
-    final_return = cumret.iloc[-1] if len(cumret) > 0 else 0
+    # Determine strategy color based on final NET return (green = positive, red = negative)
+    final_return = cumret_net.iloc[-1] if len(cumret_net) > 0 else 0
     strategy_color = '#2ecc71' if final_return >= 0 else '#e74c3c'
     strategy_fill = 'rgba(46, 204, 113, 0.2)' if final_return >= 0 else 'rgba(231, 76, 60, 0.2)'
     
     fig = go.Figure()
     
-    # Add strategy line with area fill - dynamic green/red based on performance
+    # Add GROSS return line (muted, before TC) - only if different from net
+    if has_tc_data and gross_ret is not None:
+        fig.add_trace(go.Scatter(
+            x=cumret_gross.index,
+            y=cumret_gross.values,
+            mode='lines',
+            name='PnL Gross',
+            line={'color': '#95a5a6', 'width': 1.5, 'dash': 'dot'},
+            hovertemplate='%{y:.2%}',
+            showlegend=False,
+        ))
+    
+    # Add NET return line (main, after TC) - dynamic green/red based on performance
     fig.add_trace(go.Scatter(
-        x=cumret.index,
-        y=cumret.values,
+        x=cumret_net.index,
+        y=cumret_net.values,
         mode='lines',
-        name='PnL Strategy',
+        name='PnL Net',
         line={'color': strategy_color, 'width': 2.5},
         fill='tozeroy',
         fillcolor=strategy_fill,
         hovertemplate='%{y:.2%}',
-        showlegend=False,  # Hide from legend, keep in tooltip
+        showlegend=False,
     ))
+    
+    # Add cumulative TC (invisible line, shows in tooltip)
+    if has_tc_data:
+        fig.add_trace(go.Scatter(
+            x=cum_tc.index,
+            y=cum_tc.values,
+            mode='lines',
+            name='Cum TC Drag',
+            line={'color': 'rgba(0,0,0,0)', 'width': 0},  # Invisible
+            hovertemplate='%{y:.2%}',
+            showlegend=False,
+        ))
     
     # Add benchmark overlays (hidden from legend but visible in tooltip)
     if benchmark_returns:
         bench_colors = ['#3498db', '#9b59b6', '#1abc9c', '#f39c12', '#95a5a6', '#e67e22']
         for i, (name, bench_ret) in enumerate(benchmark_returns.items()):
             bench_cumret = (1.0 + bench_ret).cumprod() - 1.0
-            bench_cumret = bench_cumret.reindex(cumret.index, method='ffill')
+            bench_cumret = bench_cumret.reindex(cumret_net.index, method='ffill')
             color = BENCHMARK_COLORS.get(name, bench_colors[i % len(bench_colors)])
             fig.add_trace(go.Scatter(
                 x=bench_cumret.index,
@@ -652,9 +753,9 @@ def _render_cumulative_return_chart_plotly(
         showlegend=False,
     ))
     
-    # Add exposure traces if diag data is available
+    # Add exposure traces if diag data is available (invisible, tooltip only)
     if diag is not None and not diag.empty:
-        diag_aligned = diag.reindex(cumret.index, method='ffill')
+        diag_aligned = diag.reindex(cumret_net.index, method='ffill')
         
         if 'gross_exposure' in diag_aligned.columns and 'net_exposure' in diag_aligned.columns:
             gross = diag_aligned['gross_exposure'].fillna(1.0)
@@ -662,13 +763,12 @@ def _render_cumulative_return_chart_plotly(
             long_exp = (gross + net) / 2
             short_exp = (gross - net) / 2
             
-            # These are invisible lines - only appear in hover tooltip
             fig.add_trace(go.Scatter(
                 x=long_exp.index,
                 y=long_exp.values,
                 mode='lines',
                 name='Long',
-                line={'color': 'rgba(0,0,0,0)', 'width': 0},  # Invisible line
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},
                 hovertemplate='%{y:.2f}',
                 showlegend=False,
             ))
@@ -696,14 +796,19 @@ def _render_cumulative_return_chart_plotly(
     # Add zero line
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
     
+    # Build title with TC info
+    title_text = 'Cumulative Return'
+    if has_tc_data:
+        title_text += ' (Net of TC)'
+    
     fig.update_layout(
-        title={'text': 'Cumulative Return', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        title={'text': title_text, 'font': {'size': 14, 'color': '#ecf0f1'}},
         paper_bgcolor='#0E1117',
         plot_bgcolor='#262730',
         font={'color': '#ecf0f1'},
-        height=320,
-        margin={'l': 60, 'r': 20, 't': 40, 'b': 40},
-        showlegend=False,  # Hide legend entirely - tooltips still work
+        autosize=True,
+        margin={'l': 60, 'r': 40, 't': 40, 'b': 40},
+        showlegend=False,
         xaxis={'gridcolor': '#3A3A3A', 'zerolinecolor': '#3A3A3A'},
         yaxis={
             'gridcolor': '#3A3A3A',
@@ -718,7 +823,8 @@ def _render_cumulative_return_chart_plotly(
         },
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    config = get_plotly_config()
+    st.plotly_chart(fig, config=config)
 
 
 def _render_drawdown_chart_plotly(
@@ -729,7 +835,7 @@ def _render_drawdown_chart_plotly(
     """Render interactive drawdown chart with Plotly and benchmark overlays.
     
     Clean chart with unified hover tooltip showing all metrics.
-    No legend clutter - tooltips show everything on hover.
+    Shows both gross and net drawdown if TC data available.
     
     Args:
         ret_series: Strategy return series
@@ -742,17 +848,64 @@ def _render_drawdown_chart_plotly(
         st.warning("Plotly not available")
         return
     
-    eq = (1.0 + ret_series).cumprod()
-    dd = eq / eq.cummax() - 1.0
+    # Determine if we have both gross and net returns
+    has_tc_data = False
+    gross_ret = None
+    net_ret = ret_series
+    daily_tc = None
+    
+    if diag is not None and not diag.empty:
+        if 'port_ret' in diag.columns:
+            gross_ret = diag['port_ret'].fillna(0.0)
+        
+        # Check for TC cost columns
+        if 'tc_cost' in diag.columns:
+            daily_tc = diag['tc_cost'].fillna(0.0)
+            has_tc_data = True
+        elif 'tc_cost_atr' in diag.columns:
+            daily_tc = diag['tc_cost_atr'].fillna(0.0)
+            has_tc_data = True
+        elif 'tc_cost_flat' in diag.columns:
+            daily_tc = diag['tc_cost_flat'].fillna(0.0)
+            has_tc_data = True
+        elif 'turnover' in diag.columns:
+            tc_bps = float(getattr(cfg.strategy, "TC_BASIS_POINTS", 10.0))
+            daily_tc = diag['turnover'].fillna(0.0) * (tc_bps / 10000.0)
+            has_tc_data = True
+        
+        if gross_ret is not None and 'port_ret_net_tc' in diag.columns:
+            net_ret = diag['port_ret_net_tc'].fillna(0.0)
+    
+    # Compute drawdowns
+    eq_net = (1.0 + net_ret).cumprod()
+    dd_net = eq_net / eq_net.cummax() - 1.0
+    
+    if gross_ret is not None:
+        eq_gross = (1.0 + gross_ret).cumprod()
+        dd_gross = eq_gross / eq_gross.cummax() - 1.0
+    else:
+        dd_gross = dd_net
     
     fig = go.Figure()
     
-    # Add strategy drawdown with red fill (drawdown is always negative)
+    # Add GROSS drawdown (muted, before TC) - only if different from net
+    if has_tc_data and gross_ret is not None:
+        fig.add_trace(go.Scatter(
+            x=dd_gross.index,
+            y=dd_gross.values,
+            mode='lines',
+            name='DD Gross',
+            line={'color': '#95a5a6', 'width': 1.5, 'dash': 'dot'},
+            hovertemplate='%{y:.2%}',
+            showlegend=False,
+        ))
+    
+    # Add NET drawdown with red fill (main line)
     fig.add_trace(go.Scatter(
-        x=dd.index,
-        y=dd.values,
+        x=dd_net.index,
+        y=dd_net.values,
         mode='lines',
-        name='DD Strategy',
+        name='DD Net',
         line={'color': '#e74c3c', 'width': 2},
         fill='tozeroy',
         fillcolor='rgba(231, 76, 60, 0.3)',
@@ -760,13 +913,25 @@ def _render_drawdown_chart_plotly(
         showlegend=False,
     ))
     
+    # Add daily TC cost (invisible, shows in tooltip)
+    if has_tc_data and daily_tc is not None:
+        fig.add_trace(go.Scatter(
+            x=daily_tc.index,
+            y=daily_tc.values,
+            mode='lines',
+            name='Daily TC',
+            line={'color': 'rgba(0,0,0,0)', 'width': 0},
+            hovertemplate='%{y:.3%}',
+            showlegend=False,
+        ))
+    
     # Add benchmark drawdowns (no legend, visible in tooltip)
     if benchmark_returns:
         bench_colors = ['#3498db', '#9b59b6', '#1abc9c', '#f39c12', '#95a5a6', '#e67e22']
         for i, (name, bench_ret) in enumerate(benchmark_returns.items()):
             bench_eq = (1.0 + bench_ret).cumprod()
             bench_dd = bench_eq / bench_eq.cummax() - 1.0
-            bench_dd = bench_dd.reindex(dd.index, method='ffill')
+            bench_dd = bench_dd.reindex(dd_net.index, method='ffill')
             color = BENCHMARK_COLORS.get(name, bench_colors[i % len(bench_colors)])
             fig.add_trace(go.Scatter(
                 x=bench_dd.index,
@@ -780,7 +945,7 @@ def _render_drawdown_chart_plotly(
     
     # Add additional metrics from diag - invisible lines, only in tooltip
     if diag is not None and not diag.empty:
-        diag_aligned = diag.reindex(dd.index, method='ffill')
+        diag_aligned = diag.reindex(dd_net.index, method='ffill')
         
         if 'n_positions' in diag_aligned.columns:
             n_pos = diag_aligned['n_positions'].fillna(0)
@@ -789,7 +954,7 @@ def _render_drawdown_chart_plotly(
                 y=n_pos.values,
                 mode='lines',
                 name='Positions',
-                line={'color': 'rgba(0,0,0,0)', 'width': 0},  # Invisible
+                line={'color': 'rgba(0,0,0,0)', 'width': 0},
                 yaxis='y2',
                 hovertemplate='%{y:.0f}',
                 showlegend=False,
@@ -811,14 +976,19 @@ def _render_drawdown_chart_plotly(
     # Add zero line
     fig.add_hline(y=0, line_color="rgba(255,255,255,0.5)")
     
+    # Build title with TC info
+    title_text = 'Drawdown'
+    if has_tc_data:
+        title_text += ' (Net of TC)'
+    
     fig.update_layout(
-        title={'text': 'Drawdown', 'font': {'size': 14, 'color': '#ecf0f1'}},
+        title={'text': title_text, 'font': {'size': 14, 'color': '#ecf0f1'}},
         paper_bgcolor='#0E1117',
         plot_bgcolor='#262730',
         font={'color': '#ecf0f1'},
-        height=320,
-        margin={'l': 60, 'r': 20, 't': 40, 'b': 40},
-        showlegend=False,  # No legend - cleaner chart, tooltips still work
+        autosize=True,
+        margin={'l': 60, 'r': 40, 't': 40, 'b': 40},
+        showlegend=False,
         xaxis={'gridcolor': '#3A3A3A', 'zerolinecolor': '#3A3A3A'},
         yaxis={
             'gridcolor': '#3A3A3A',
@@ -829,7 +999,7 @@ def _render_drawdown_chart_plotly(
             'overlaying': 'y',
             'side': 'right',
             'showgrid': False,
-            'visible': False,  # Hide secondary axis
+            'visible': False,
         },
         hovermode='x unified',
         hoverlabel={
@@ -839,114 +1009,8 @@ def _render_drawdown_chart_plotly(
         },
     )
     
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def _render_calendar_heatmap(ret_series: pd.Series) -> None:
-    """Render calendar heatmap of daily returns."""
-    st.markdown(
-        '<div class="section-title"><span class="icon">📅</span> Calendar Heatmap (Recent Year)</div>',
-        unsafe_allow_html=True
-    )
-    
-    if ret_series is None or ret_series.empty:
-        st.info("No return data available for calendar heatmap")
-        return
-    
-    # Use last ~380 days (about 1.5 years of trading days)
-    recent = ret_series.tail(380)
-    
-    if len(recent) < 50:
-        st.info("Not enough data for calendar heatmap (need at least 50 days)")
-        return
-    
-    # Try Plotly heatmap first
-    if PLOTLY_AVAILABLE:
-        _render_calendar_heatmap_plotly(recent)
-    else:
-        # Fallback to matplotlib
-        try:
-            fig = create_calendar_heatmap(recent, title="Daily Returns Heatmap")
-            st.pyplot(fig)
-            plt.close(fig)
-        except Exception as e:
-            st.warning(f"Could not render calendar heatmap: {str(e)}")
-
-
-def _render_calendar_heatmap_plotly(ret_series: pd.Series) -> None:
-    """Render interactive calendar heatmap using Plotly."""
-    try:
-        import plotly.graph_objects as go
-    except ImportError:
-        return
-    
-    # Prepare data - pivot by week and day
-    df = pd.DataFrame({'return': ret_series})
-    df['date'] = df.index
-    df['year'] = df['date'].apply(lambda x: x.year)
-    df['week'] = df['date'].apply(lambda x: x.isocalendar()[1])
-    df['weekday'] = df['date'].apply(lambda x: x.weekday())
-    df['month'] = df['date'].apply(lambda x: x.strftime('%b'))
-    
-    # Create hover text
-    df['hover'] = df.apply(
-        lambda row: f"{row['date'].strftime('%Y-%m-%d')}<br>Return: {row['return']:.2%}",
-        axis=1
-    )
-    
-    # Get the most recent year
-    most_recent_year = df['year'].max()
-    df_year = df[df['year'] == most_recent_year]
-    
-    if len(df_year) < 20:
-        # Fall back to all data if current year has too little
-        df_year = df.tail(252)  # About 1 year
-    
-    # Create pivot table for heatmap
-    # Week on x-axis, weekday on y-axis
-    pivot_data = df_year.pivot_table(
-        values='return',
-        index='weekday',
-        columns='week',
-        aggfunc='mean'
-    )
-    
-    weekday_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    
-    # Limit to actual weekdays (0-4)
-    pivot_data = pivot_data.loc[pivot_data.index.isin([0, 1, 2, 3, 4])]
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=pivot_data.values * 100,  # Convert to percentage
-        x=[f"W{w}" for w in pivot_data.columns],
-        y=[weekday_labels[i] for i in pivot_data.index],
-        colorscale=[
-            [0, '#e74c3c'],      # Red for negative
-            [0.5, '#f5f5f5'],    # White for zero
-            [1, '#2ecc71'],      # Green for positive
-        ],
-        zmid=0,
-        colorbar=dict(
-            title=dict(text="Return %", side="right"),
-            ticksuffix="%",
-        ),
-        hovertemplate="Week %{x}<br>%{y}<br>Return: %{z:.2f}%<extra></extra>",
-    ))
-    
-    fig.update_layout(
-        title={'text': f"Daily Returns Heatmap ({most_recent_year})", 'font': {'size': 14, 'color': '#ecf0f1'}},
-        paper_bgcolor='#0E1117',
-        plot_bgcolor='#262730',
-        font={'color': '#ecf0f1'},
-        height=200,
-        margin={'l': 50, 'r': 20, 't': 50, 'b': 30},
-        xaxis={'showgrid': False},
-        yaxis={'showgrid': False},
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-
+    config = get_plotly_config()
+    st.plotly_chart(fig, config=config)
 def _render_tc_sensitivity(data: DashboardData, ret_series: pd.Series) -> None:
     """Render TC sensitivity analysis section."""
     if ret_series is None or data.weights is None or len(ret_series) < 20:
@@ -975,7 +1039,7 @@ def _render_tc_sensitivity(data: DashboardData, ret_series: pd.Series) -> None:
             display_df.columns = ["TC (bps)", "Ann Return", "Ann Vol", "Sharpe", "Max DD", "TC Drag"]
             
             # Style the dataframe
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
             
             # Quick insight
             sharpe_at_10 = tc_comparison[tc_comparison["tc_bps"] == 10]["sharpe"].values[0]
@@ -1037,18 +1101,19 @@ def _render_risk_metrics(perf: Dict) -> None:
                 thresholds=[0.05, 0.10, 0.20],
             )
             if fig is not None:
-                st.plotly_chart(fig, width='stretch')
-        else:
-            # Fallback: simple text-based indicator
-            dd_level = abs(perf['current_drawdown'])
-            if dd_level < 0.05:
-                st.success("Risk: LOW")
-            elif dd_level < 0.10:
-                st.warning("Risk: MODERATE")
-            elif dd_level < 0.20:
-                st.error("Risk: HIGH")
+                config = get_plotly_config()
+                st.plotly_chart(fig, config=config)
             else:
-                st.error("Risk: CRITICAL")
+                # Fallback: simple text-based indicator
+                dd_level = abs(perf['current_drawdown'])
+                if dd_level < 0.05:
+                    st.success("Risk: LOW")
+                elif dd_level < 0.10:
+                    st.warning("Risk: MODERATE")
+                elif dd_level < 0.20:
+                    st.error("Risk: HIGH")
+                else:
+                    st.error("Risk: CRITICAL")
 
 
 def _render_winloss_profile(perf: Dict) -> None:
@@ -1201,7 +1266,8 @@ def _render_portfolio_snapshot(
                 fig = create_sparkline(cumret, height=50, width=300)
                 if fig is not None:
                     st.caption("30-day return trend:")
-                    st.plotly_chart(fig, width='stretch')
+                    config = get_plotly_config()
+                    st.plotly_chart(fig, config=config)
 
 
 def _render_exposure_and_positions(data: DashboardData) -> None:
@@ -1242,6 +1308,110 @@ def _render_exposure_and_positions(data: DashboardData) -> None:
             else:
                 st.caption("No short positions")
 
+def _render_calendar_heatmap(ret_series: pd.Series) -> None:
+    """Render calendar heatmap of daily returns."""
+    st.markdown(
+        '<div class="section-title"><span class="icon">📅</span> Calendar Heatmap (Recent Year)</div>',
+        unsafe_allow_html=True
+    )
+    
+    if ret_series is None or ret_series.empty:
+        st.info("No return data available for calendar heatmap")
+        return
+    
+    # Use last ~380 days (about 1.5 years of trading days)
+    recent = ret_series.tail(380)
+    
+    if len(recent) < 50:
+        st.info("Not enough data for calendar heatmap (need at least 50 days)")
+        return
+    
+    # Try Plotly heatmap first
+    if PLOTLY_AVAILABLE:
+        _render_calendar_heatmap_plotly(recent)
+    else:
+        # Fallback to matplotlib
+        try:
+            fig = create_calendar_heatmap(recent, title="Daily Returns Heatmap")
+            st.pyplot(fig)
+            plt.close(fig)
+        except Exception as e:
+            st.warning(f"Could not render calendar heatmap: {str(e)}")
+
+
+def _render_calendar_heatmap_plotly(ret_series: pd.Series) -> None:
+    """Render interactive calendar heatmap using Plotly."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        return
+    
+    # Prepare data - pivot by week and day
+    df = pd.DataFrame({'return': ret_series})
+    df['date'] = df.index
+    df['year'] = df['date'].apply(lambda x: x.year)
+    df['week'] = df['date'].apply(lambda x: x.isocalendar()[1])
+    df['weekday'] = df['date'].apply(lambda x: x.weekday())
+    df['month'] = df['date'].apply(lambda x: x.strftime('%b'))
+    
+    # Create hover text
+    df['hover'] = df.apply(
+        lambda row: f"{row['date'].strftime('%Y-%m-%d')}<br>Return: {row['return']:.2%}",
+        axis=1
+    )
+    
+    # Get the most recent year
+    most_recent_year = df['year'].max()
+    df_year = df[df['year'] == most_recent_year]
+    
+    if len(df_year) < 20:
+        # Fall back to all data if current year has too little
+        df_year = df.tail(252)  # About 1 year
+    
+    # Create pivot table for heatmap
+    # Week on x-axis, weekday on y-axis
+    pivot_data = df_year.pivot_table(
+        values='return',
+        index='weekday',
+        columns='week',
+        aggfunc='mean'
+    )
+    
+    weekday_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    
+    # Limit to actual weekdays (0-4)
+    pivot_data = pivot_data.loc[pivot_data.index.isin([0, 1, 2, 3, 4])]
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot_data.values * 100,  # Convert to percentage
+        x=[f"W{w}" for w in pivot_data.columns],
+        y=[weekday_labels[i] for i in pivot_data.index],
+        colorscale=[
+            [0, '#e74c3c'],      # Red for negative
+            [0.5, '#f5f5f5'],    # White for zero
+            [1, '#2ecc71'],      # Green for positive
+        ],
+        zmid=0,
+        colorbar=dict(
+            title=dict(text="Return %", side="right"),
+            ticksuffix="%",
+        ),
+        hovertemplate="Week %{x}<br>%{y}<br>Return: %{z:.2f}%<extra></extra>",
+    ))
+    
+    layout = get_plotly_layout(
+        title=f"Daily Returns Heatmap ({most_recent_year})",
+        height=250,  # Slightly more height for better visibility
+    )
+    layout["xaxis"].update({'showgrid': False})
+    layout["yaxis"].update({'showgrid': False})
+    layout["margin"] = {'l': 50, 'r': 20, 't': 50, 'b': 30}
+    layout["title"]["font"]["size"] = 14
+    
+    fig.update_layout(**layout)
+    
+    config = get_plotly_config()
+    st.plotly_chart(fig, config=config)
 
 def _render_expandable_sections(
     data: DashboardData,

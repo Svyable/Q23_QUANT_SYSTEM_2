@@ -1,0 +1,36 @@
+name,unit,period,description,id
+Market Price (USD),USD,day,Average USD market price across major bitcoin exchanges.,market-price
+Average Block Size,MB,day,The average block size in MB.,avg-block-size
+Confirmed Transactions Per Day,Transactions,day,The number of daily confirmed Bitcoin transactions.,n-transactions
+Mempool Size,Bytes,minute,The aggregate size of transactions waiting to be confirmed.,mempool-size
+Bitcoins in circulation,BTC,day,"The total number of bitcoins that have already been mined; in other words, the current supply of bitcoins on the network.",total-bitcoins
+Market Capitalization,USD,day,"The total USD value of bitcoin supply in circulation, as calculated by the daily average market price across major exchanges.",market-cap
+USD Exchange Trade Volume,Trade Volume (USD),day,The total USD value of trading volume on major bitcoin exchanges.,trade-volume
+Blockchain Size,MB,day,The total size of all block headers and transactions. Not including database indexes.,blocks-size
+Average Number Of Transactions Per Block,Transactions Per Block,day,The average number of transactions per block.,n-transactions-per-block
+,,,,n-payments-per-block
+Total Number of Transactions,Transactions,day,Total Number of transactions,n-transactions-total
+Median Confirmation Time,Minutes,day,The median time for a transaction to be accepted into a mined block and added to the public ledger (note: only includes transactions with miner fees).,median-confirmation-time
+Average Confirmation Time,minutes,6hours,,avg-confirmation-time
+Hash Rate,Hash Rate TH/s,day,The estimated number of tera hashes per second (trillions of hashes per second) the Bitcoin network is performing.,hash-rate
+Difficulty,Difficulty,day,A relative measure of how difficult it is to find a new block. The difficulty is adjusted periodically as a function of how much hashing power has been deployed by the network of miners.,difficulty
+Miners Revenue,USD,day,Total value of coinbase block rewards and transaction fees paid to miners.,miners-revenue
+Total Transaction Fees,BTC,day,The total value of all transaction fees paid to miners (not including the coinbase value of block rewards).,transaction-fees
+Total Transaction Fees in USD,USD,day,The total value of all transaction fees paid to miners (not including the coinbase value of block rewards).,transaction-fees-usd
+,,,,fees-usd-per-transaction
+Cost % of Transaction Volume,%,day,A chart showing miners revenue as percentage of the transaction volume.,cost-per-transaction-percent
+Cost per Transaction,USD,day,A chart showing miners revenue divided by the number of transactions.,cost-per-transaction
+Number Of Unique Addresses Used,Unique Addresses,day,The total number of unique addresses used on the Bitcoin blockchain.,n-unique-addresses
+,,,,n-payments
+Transaction Rate,Transactions Per Second,minute,The number of Bitcoin transactions added to the mempool per second.,transactions-per-second
+Output Value,BTC,day,The total value of all transaction outputs per day (includes coins returned to the sender as change).,output-volume
+Mempool Transaction Count,Transactions,minute,The number of transactions waiting to be confirmed.,mempool-count
+Mempool Size Growth,Bytes Per Second,minute,The rate at which the mempool is growing per second.,mempool-growth
+Number of Unspent Transaction Outputs,Number of Outputs,hour,"The number of unspent Bitcoin transactions outputs, also known as the UTXO set size.",utxo-count
+Number of Transactions Excluding Popular Addresses,Number of transactions,day,"The total number of Bitcoin transactions, excluding those involving any of the network&#39;s 100 most popular addresses.",n-transactions-excluding-popular
+Estimated Transaction Value,BTC,day,The total estimated value of transactions on the Bitcoin blockchain (does not include coins returned to sender as change).,estimated-transaction-volume
+Estimated USD Transaction Value,USD,day,The Estimated Transaction Value in USD value.,estimated-transaction-volume-usd
+Blockchain Wallet Users,User Count,day,,my-wallet-n-users
+,,,,mvrv
+,,,,nvt
+,,,,nvts

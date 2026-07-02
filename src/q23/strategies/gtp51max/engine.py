@@ -19,6 +19,7 @@ from q23.strategy.ic_weighting import (
 )
 from q23.strategy.portfolio import PortfolioConstructor, PortfolioParams
 from q23.strategy.risk_overlays import RiskOverlayParams, combined_overlay, apply_overlay
+from q23.shared import config as global_config
 
 
 @StrategyRegistry.register
@@ -72,6 +73,7 @@ class GTP51MAXStrategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         if xr is None:
             raise ImportError("xarray required")
@@ -89,8 +91,13 @@ class GTP51MAXStrategy(StrategyBase):
 
         bundle = load_market_data(
             min_date=use_min_date,
+            max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=global_config.cfg.marketstack.ENABLED,
+            force_live_data=force_live_data,
+            strategy_id=self.strategy_id(),
         )
 
         ds = bundle.data

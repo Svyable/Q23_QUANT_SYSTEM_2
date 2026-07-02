@@ -2,6 +2,7 @@
 Weights Explorer Page
 
 Interactive exploration of portfolio weights over time with treemap visualization.
+Enhanced with PM-focused stock analytics in tooltips.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ from q23.dashboard.components.styles import (
     style_long_weights_gradient,
     style_short_weights_gradient,
     style_weights_diverging_gradient,
+)
+from q23.dashboard.analytics import (
+    compute_batch_stock_metrics,
+    select_return_series,
 )
 
 
@@ -30,22 +35,24 @@ def render_weights_page(data: DashboardData) -> None:
     c1, c2, c3 = st.columns([1.2, 1.2, 2.0])
     with c1:
         n_days = st.number_input(
-            "Last N days",
+            "📈 Last N Days",
             min_value=10,
             max_value=4000,
             value=252,
-            step=10
+            step=10,
+            help="Number of recent trading days to analyze for weight evolution and trends",
         )
     with c2:
         topk = st.number_input(
-            "Top K assets",
+            "🎯 Top K Assets",
             min_value=10,
             max_value=300,
             value=60,
-            step=5
+            step=5,
+            help="Maximum number of positions to display (sorted by absolute weight). Higher values may slow performance.",
         )
     with c3:
-        st.caption("Tip: keep Top K modest for performance")
+        st.caption("💡 Tip: keep Top K modest for better performance")
     
     # Compute filtered weights
     tail = data.weights.tail(int(n_days))
@@ -54,9 +61,10 @@ def render_weights_page(data: DashboardData) -> None:
     tail_small = tail[keep_cols]
     
     # ==========================================================================
-    # TREEMAP VISUALIZATION
+    # TREEMAP VISUALIZATION WITH ELITE ANALYTICS
     # ==========================================================================
-    st.markdown("### Position Treemap")
+    st.markdown("### 📊 Position Treemap")
+    st.caption("Hover over positions for detailed analytics")
     
     if PLOTLY_AVAILABLE:
         # Get current weights for treemap
@@ -64,19 +72,39 @@ def render_weights_page(data: DashboardData) -> None:
         w_nonzero = w_last[w_last.abs() > 1e-12]
         
         if len(w_nonzero) > 0:
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([2, 1, 1])
             with col2:
                 color_by_value = st.checkbox(
                     "Color by long/short",
                     value=True,
                     help="Color positions by direction (green=long, red=short)"
                 )
+            with col3:
+                show_analytics = st.checkbox(
+                    "Show analytics",
+                    value=True,
+                    help="Show detailed stock analytics in tooltip (may take a moment)"
+                )
+            
+            # Compute stock metrics for enhanced tooltips
+            stock_metrics = None
+            if show_analytics:
+                with st.spinner("Computing stock analytics..."):
+                    portfolio_returns = select_return_series(data.diag)
+                    if portfolio_returns is not None:
+                        stock_metrics = compute_batch_stock_metrics(
+                            weights=data.weights,
+                            portfolio_returns=portfolio_returns,
+                            factor_vectors=data.factor_vectors,
+                            symbols=w_nonzero.index.tolist(),
+                        )
             
             with col1:
                 fig = create_treemap_chart(
                     w_nonzero,
-                    title="Current Position Sizes",
+                    title="Current Position Sizes (hover for analytics)",
                     color_by_value=color_by_value,
+                    stock_metrics=stock_metrics,
                 )
                 if fig is not None:
                     st.plotly_chart(fig, width='stretch')

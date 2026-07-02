@@ -28,6 +28,7 @@ from q23.strategies.q23_neural_alpha.config import (
     NEURAL_ALPHA_NOVEL_FACTORS,
 )
 from q23.strategy.outputs import OutputWriter
+from q23.shared import config as global_config
 
 
 @StrategyRegistry.register
@@ -98,6 +99,7 @@ class Q23NeuralAlphaStrategy(StrategyBase):
         max_date: Optional[str] = None,
         tag: Optional[str] = None,
         write_outputs: bool = True,
+        force_live_data: bool = False,
     ) -> StrategyArtifacts:
         """Execute the Neural Alpha strategy.
         
@@ -106,6 +108,7 @@ class Q23NeuralAlphaStrategy(StrategyBase):
             max_date: Maximum date for data (optional)
             tag: Output tag for file naming
             write_outputs: Whether to write output files
+            force_live_data: Force fetching latest Marketstack data even if no gap detected
             
         Returns:
             StrategyArtifacts containing weights, factors, and metadata
@@ -128,12 +131,16 @@ class Q23NeuralAlphaStrategy(StrategyBase):
         cfg = neural_alpha_config
         use_min_date = min_date or cfg.MIN_DATE
 
-        # 1) Load market data
+        # 1) Load market data (always fetch latest Marketstack data for neural_alpha)
         bundle = load_market_data(
             min_date=use_min_date,
             max_date=max_date,
             exchanges=list(cfg.EXCHANGES),
             pinned=None,
+            fill_recent_days=global_config.cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+            use_marketstack=True,  # Always enabled for neural_alpha
+            force_live_data=True,  # Always fetch latest data
+            strategy_id=self.strategy_id(),  # Pass strategy ID for telemetry
         )
 
         ds = bundle.data
@@ -264,6 +271,9 @@ class Q23NeuralAlphaStrategy(StrategyBase):
             writer.write_factor_vectors(fv, tag=use_tag)
 
             # Metadata
+            # Get Marketstack info from bundle meta
+            marketstack_info = bundle.meta.get("marketstack", {}) if hasattr(bundle, 'meta') else {}
+            
             meta = {
                 "strategy_id": self.strategy_id(),
                 "strategy_version": self.config.version,
@@ -274,6 +284,10 @@ class Q23NeuralAlphaStrategy(StrategyBase):
                     str(final_weights.time.values[0])[:10],
                     str(final_weights.time.values[-1])[:10],
                 ],
+                "data_source": {
+                    "latest_date": bundle.meta.get("latest_date") or str(final_weights.time.values[-1])[:10],
+                    "marketstack": marketstack_info,
+                },
                 "factors": {
                     "total": len(NEURAL_ALPHA_FACTORS),
                     "novel": len(NEURAL_ALPHA_NOVEL_FACTORS),

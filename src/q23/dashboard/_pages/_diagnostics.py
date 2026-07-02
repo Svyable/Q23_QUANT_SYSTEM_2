@@ -163,12 +163,15 @@ def _compute_concentration_metrics(weights: pd.DataFrame) -> ConcentrationMetric
     """Compute comprehensive concentration metrics over time."""
     metrics = []
     
-    for dt, row in weights.iterrows():
-        w_abs = row.abs()
-        gross = w_abs.sum()
-        
-        if gross < 1e-12:
-            continue
+    # Vectorized computation: compute gross exposure for all dates at once
+    gross_exposure = weights.abs().sum(axis=1)
+    valid_dates = gross_exposure[gross_exposure >= 1e-12].index
+    
+    # Process each date (still need loop for per-date metrics, but use vectorized operations)
+    for dt in valid_dates:
+        w_row = weights.loc[dt]
+        w_abs = w_row.abs()
+        gross = gross_exposure.loc[dt]
         
         w_sorted = w_abs.sort_values(ascending=False)
         w_normalized = w_abs / gross
@@ -398,6 +401,80 @@ def _extract_asset_returns(data: DashboardData) -> Optional[pd.DataFrame]:
     return None
 
 
+def _generate_diagnostics_csv(
+    turnover_metrics: TurnoverMetrics,
+    concentration_metrics: ConcentrationMetrics,
+    signal_decay: Optional[SignalDecayMetrics],
+    trade_quality: TradeQualityMetrics,
+    rolling_metrics: pd.DataFrame,
+    alerts: List[Dict],
+) -> str:
+    """
+    Generate CSV export of diagnostic analysis data.
+    
+    Args:
+        turnover_metrics: Turnover analysis results
+        concentration_metrics: Concentration metrics
+        signal_decay: Signal decay metrics (optional)
+        trade_quality: Trade quality metrics
+        rolling_metrics: Rolling performance metrics
+        alerts: List of diagnostic alerts
+        
+    Returns:
+        CSV string
+    """
+    csv_parts = []
+    
+    # Summary metrics
+    summary_rows = [
+        {"Category": "Turnover", "Metric": "Avg Daily Turnover", "Value": f"{turnover_metrics.avg_daily:.4f}"},
+        {"Category": "Turnover", "Metric": "Current Turnover", "Value": f"{turnover_metrics.current:.4f}"},
+        {"Category": "Turnover", "Metric": "Annualized Turnover", "Value": f"{turnover_metrics.annualized:.2f}x"},
+        {"Category": "Turnover", "Metric": "Est. TC Drag (Annual)", "Value": f"{turnover_metrics.tc_drag_annual:.4f}"},
+        {"Category": "Concentration", "Metric": "N Positions", "Value": str(concentration_metrics.current_n_positions)},
+        {"Category": "Concentration", "Metric": "Top 5 Conc", "Value": f"{concentration_metrics.current_top5_conc:.4f}"},
+        {"Category": "Concentration", "Metric": "Top 10 Conc", "Value": f"{concentration_metrics.current_top10_conc:.4f}"},
+        {"Category": "Concentration", "Metric": "HHI", "Value": f"{concentration_metrics.current_hhi:.4f}"},
+        {"Category": "Concentration", "Metric": "Effective N", "Value": f"{concentration_metrics.effective_n:.1f}"},
+        {"Category": "Trade Quality", "Metric": "Avg Trade Size", "Value": f"{trade_quality.avg_trade_size:.4f}"},
+        {"Category": "Trade Quality", "Metric": "Trade Frequency", "Value": f"{trade_quality.trade_frequency:.2f}%"},
+        {"Category": "Trade Quality", "Metric": "Timing Score", "Value": f"{trade_quality.timing_score:.1f}"},
+        {"Category": "Trade Quality", "Metric": "Churn Rate", "Value": f"{trade_quality.churn_rate:.2f}%"},
+    ]
+    
+    if signal_decay:
+        summary_rows.extend([
+            {"Category": "Signal Decay", "Metric": "Decay Rate", "Value": f"{signal_decay.decay_rate:.4f}"},
+            {"Category": "Signal Decay", "Metric": "Half Life (days)", "Value": f"{signal_decay.half_life_days:.1f}"},
+            {"Category": "Signal Decay", "Metric": "Severity", "Value": signal_decay.decay_severity},
+        ])
+    
+    csv_parts.append("# DIAGNOSTIC SUMMARY")
+    csv_parts.append(pd.DataFrame(summary_rows).to_csv(index=False))
+    
+    # Alerts
+    if alerts:
+        alert_rows = [{"Severity": a["severity"], "Category": a["category"], 
+                       "Message": a["message"], "Action": a["action"]} for a in alerts]
+        csv_parts.append("\n# ALERTS")
+        csv_parts.append(pd.DataFrame(alert_rows).to_csv(index=False))
+    
+    # Rolling metrics time series
+    if not rolling_metrics.empty:
+        csv_parts.append("\n# ROLLING METRICS")
+        rm_df = rolling_metrics.reset_index()
+        rm_df.rename(columns={"index": "Date"}, inplace=True)
+        csv_parts.append(rm_df.to_csv(index=False))
+    
+    # Turnover time series
+    csv_parts.append("\n# TURNOVER TIME SERIES")
+    to_df = turnover_metrics.series.to_frame(name="turnover").reset_index()
+    to_df.rename(columns={"index": "Date"}, inplace=True)
+    csv_parts.append(to_df.to_csv(index=False))
+    
+    return "\n".join(csv_parts)
+
+
 def _generate_diagnostic_alerts(
     turnover: TurnoverMetrics,
     concentration: ConcentrationMetrics,
@@ -477,7 +554,7 @@ def _generate_diagnostic_alerts(
 # Visualization Functions
 # =============================================================================
 
-def _create_turnover_chart(turnover: pd.Series, avg: float, height: int = 300) -> Optional["go.Figure"]:
+def _create_turnover_chart(turnover: pd.Series, avg: float, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create enhanced turnover chart."""
     if not PLOTLY_AVAILABLE or turnover.empty:
         return None
@@ -504,22 +581,25 @@ def _create_turnover_chart(turnover: pd.Series, avg: float, height: int = 300) -
     fig.add_hline(y=avg * 200, line_dash="dot", line_color=DIAG_COLORS["danger"],
                   annotation_text="2x Avg")
     
-    fig.update_layout(
-        title={"text": "Daily Portfolio Turnover", "font": {"size": 14, "color": "#FAFAFA"}},
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#262730",
-        font={"color": "#FAFAFA", "size": 11},
-        height=height,
-        showlegend=False,
-        xaxis={"gridcolor": "#3A3A3A"},
-        yaxis={"title": "Turnover (%)", "gridcolor": "#3A3A3A"},
-        margin={"l": 60, "r": 40, "t": 50, "b": 40},
-    )
+    layout = {
+        "title": {"text": "Daily Portfolio Turnover", "font": {"size": 14, "color": "#FAFAFA"}},
+        "paper_bgcolor": "#0E1117",
+        "plot_bgcolor": "#262730",
+        "font": {"color": "#FAFAFA", "size": 11},
+        "autosize": True,
+        "showlegend": False,
+        "xaxis": {"gridcolor": "#3A3A3A"},
+        "yaxis": {"title": "Turnover (%)", "gridcolor": "#3A3A3A"},
+        "margin": {"l": 60, "r": 40, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_concentration_chart(conc_df: pd.DataFrame, height: int = 300) -> Optional["go.Figure"]:
+def _create_concentration_chart(conc_df: pd.DataFrame, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create concentration metrics chart."""
     if not PLOTLY_AVAILABLE or conc_df.empty:
         return None
@@ -549,15 +629,18 @@ def _create_concentration_chart(conc_df: pd.DataFrame, height: int = 300) -> Opt
                 line=dict(color=color, width=1.5),
             ), row=1, col=2)
     
-    fig.update_layout(
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#262730",
-        font={"color": "#FAFAFA", "size": 11},
-        height=height,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        margin={"l": 60, "r": 40, "t": 80, "b": 40},
-    )
+    layout = {
+        "paper_bgcolor": "#0E1117",
+        "plot_bgcolor": "#262730",
+        "font": {"color": "#FAFAFA", "size": 11},
+        "autosize": True,
+        "showlegend": True,
+        "legend": dict(orientation="h", yanchor="bottom", y=1.02),
+        "margin": {"l": 60, "r": 40, "t": 80, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     fig.update_xaxes(gridcolor="#3A3A3A")
     fig.update_yaxes(gridcolor="#3A3A3A")
@@ -565,7 +648,7 @@ def _create_concentration_chart(conc_df: pd.DataFrame, height: int = 300) -> Opt
     return fig
 
 
-def _create_rolling_metrics_chart(metrics_df: pd.DataFrame, height: int = 400) -> Optional["go.Figure"]:
+def _create_rolling_metrics_chart(metrics_df: pd.DataFrame, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create rolling risk-adjusted metrics chart."""
     if not PLOTLY_AVAILABLE or metrics_df.empty:
         return None
@@ -600,13 +683,16 @@ def _create_rolling_metrics_chart(metrics_df: pd.DataFrame, height: int = 400) -
             if col in ["sharpe", "sortino"]:
                 fig.add_hline(y=0, line_dash="dash", line_color="#95a5a6", row=row, col=col_num)
     
-    fig.update_layout(
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#262730",
-        font={"color": "#FAFAFA", "size": 10},
-        height=height,
-        margin={"l": 50, "r": 30, "t": 60, "b": 40},
-    )
+    layout = {
+        "paper_bgcolor": "#0E1117",
+        "plot_bgcolor": "#262730",
+        "font": {"color": "#FAFAFA", "size": 10},
+        "autosize": True,
+        "margin": {"l": 50, "r": 30, "t": 60, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     fig.update_xaxes(gridcolor="#3A3A3A")
     fig.update_yaxes(gridcolor="#3A3A3A")
@@ -614,7 +700,7 @@ def _create_rolling_metrics_chart(metrics_df: pd.DataFrame, height: int = 400) -
     return fig
 
 
-def _create_autocorrelation_chart(ac_series: pd.Series, height: int = 250) -> Optional["go.Figure"]:
+def _create_autocorrelation_chart(ac_series: pd.Series, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create autocorrelation (signal decay) chart."""
     if not PLOTLY_AVAILABLE or ac_series.empty:
         return None
@@ -636,21 +722,24 @@ def _create_autocorrelation_chart(ac_series: pd.Series, height: int = 250) -> Op
     fig.add_hline(y=0.1, line_dash="dot", line_color="#95a5a6", annotation_text="Sig.")
     fig.add_hline(y=-0.1, line_dash="dot", line_color="#95a5a6")
     
-    fig.update_layout(
-        title={"text": "Return Autocorrelation (Signal Persistence)", "font": {"size": 12, "color": "#FAFAFA"}},
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#262730",
-        font={"color": "#FAFAFA", "size": 11},
-        height=height,
-        xaxis={"title": "Lag (days)", "gridcolor": "#3A3A3A"},
-        yaxis={"title": "Autocorrelation", "gridcolor": "#3A3A3A"},
-        margin={"l": 60, "r": 40, "t": 50, "b": 40},
-    )
+    layout = {
+        "title": {"text": "Return Autocorrelation (Signal Persistence)", "font": {"size": 12, "color": "#FAFAFA"}},
+        "paper_bgcolor": "#0E1117",
+        "plot_bgcolor": "#262730",
+        "font": {"color": "#FAFAFA", "size": 11},
+        "autosize": True,
+        "xaxis": {"title": "Lag (days)", "gridcolor": "#3A3A3A"},
+        "yaxis": {"title": "Autocorrelation", "gridcolor": "#3A3A3A"},
+        "margin": {"l": 60, "r": 40, "t": 50, "b": 40},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
 
-def _create_trade_quality_gauge(score: float, title: str, height: int = 180) -> Optional["go.Figure"]:
+def _create_trade_quality_gauge(score: float, title: str, height: Optional[int] = None) -> Optional["go.Figure"]:
     """Create a gauge for trade quality score."""
     if not PLOTLY_AVAILABLE:
         return None
@@ -676,12 +765,15 @@ def _create_trade_quality_gauge(score: float, title: str, height: int = 180) -> 
         },
     ))
     
-    fig.update_layout(
-        paper_bgcolor="#0E1117",
-        font={"color": "#FAFAFA"},
-        height=height,
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-    )
+    layout = {
+        "paper_bgcolor": "#0E1117",
+        "font": {"color": "#FAFAFA"},
+        "autosize": True,
+        "margin": {"l": 20, "r": 20, "t": 40, "b": 20},
+    }
+    if height is not None:
+        layout["height"] = height
+    fig.update_layout(**layout)
     
     return fig
 
@@ -697,7 +789,10 @@ def render_diagnostics_page(data: DashboardData) -> None:
     Args:
         data: Dashboard data bundle
     """
-    st.subheader("🔬 Portfolio Diagnostics")
+    # Header with download button placeholder
+    header_col1, header_col2 = st.columns([4, 1])
+    with header_col1:
+        st.subheader("🔬 Portfolio Diagnostics")
     
     st.markdown("""
     Comprehensive portfolio health analysis with execution quality metrics,
@@ -744,6 +839,20 @@ def render_diagnostics_page(data: DashboardData) -> None:
     
     # Generate alerts
     alerts = _generate_diagnostic_alerts(turnover_metrics, concentration_metrics, ret_series, rolling_metrics)
+    
+    # Add download button now that data is computed
+    with header_col2:
+        csv_data = _generate_diagnostics_csv(
+            turnover_metrics, concentration_metrics, signal_decay,
+            trade_quality, rolling_metrics, alerts
+        )
+        st.download_button(
+            label="📥 Export",
+            data=csv_data,
+            file_name="diagnostics.csv",
+            mime="text/csv",
+            help="Download diagnostic data as CSV",
+        )
     
     # ==========================================================================
     # ALERTS SECTION (if any)
@@ -824,9 +933,9 @@ def render_diagnostics_page(data: DashboardData) -> None:
     
     with col1:
         if PLOTLY_AVAILABLE:
-            fig = _create_turnover_chart(turnover_metrics.series.tail(500), turnover_metrics.avg_daily, height=280)
+            fig = _create_turnover_chart(turnover_metrics.series.tail(500), turnover_metrics.avg_daily)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             st.line_chart(turnover_metrics.series.tail(500), height=280)
     
@@ -854,9 +963,9 @@ def render_diagnostics_page(data: DashboardData) -> None:
     
     with col1:
         if PLOTLY_AVAILABLE:
-            fig = _create_concentration_chart(concentration_metrics.time_series.tail(500), height=280)
+            fig = _create_concentration_chart(concentration_metrics.time_series.tail(500))
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
         else:
             conc_cols = ["n_positions", "top5_concentration", "herfindahl"]
             st.line_chart(concentration_metrics.time_series[conc_cols].tail(500), height=280)
@@ -886,9 +995,9 @@ def render_diagnostics_page(data: DashboardData) -> None:
         
         with col1:
             if PLOTLY_AVAILABLE:
-                fig = _create_rolling_metrics_chart(rolling_metrics.tail(500), height=380)
+                fig = _create_rolling_metrics_chart(rolling_metrics.tail(500))
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
             else:
                 st.line_chart(rolling_metrics[["sharpe", "sortino"]].tail(500), height=300)
         
@@ -932,9 +1041,9 @@ def render_diagnostics_page(data: DashboardData) -> None:
             """)
             
             if PLOTLY_AVAILABLE:
-                fig = _create_autocorrelation_chart(signal_decay.autocorrelation, height=220)
+                fig = _create_autocorrelation_chart(signal_decay.autocorrelation)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
             else:
                 st.bar_chart(signal_decay.autocorrelation, height=200)
         else:
@@ -947,18 +1056,18 @@ def render_diagnostics_page(data: DashboardData) -> None:
         
         with col_a:
             if PLOTLY_AVAILABLE:
-                fig = _create_trade_quality_gauge(trade_quality.timing_score, "Trade Timing", height=160)
+                fig = _create_trade_quality_gauge(trade_quality.timing_score, "Trade Timing")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
             else:
                 st.metric("Timing Score", f"{trade_quality.timing_score:.0f}/100")
         
         with col_b:
             efficiency_score = min(max(trade_quality.rebalance_efficiency * 100 + 50, 0), 100)
             if PLOTLY_AVAILABLE:
-                fig = _create_trade_quality_gauge(efficiency_score, "Efficiency", height=160)
+                fig = _create_trade_quality_gauge(efficiency_score, "Efficiency")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
             else:
                 st.metric("Efficiency", f"{efficiency_score:.0f}/100")
         
@@ -1024,7 +1133,7 @@ def render_diagnostics_page(data: DashboardData) -> None:
         
         with tabs[0]:
             if data.diag is not None and not data.diag.empty:
-                st.dataframe(data.diag.tail(100), use_container_width=True, height=400)
+                st.dataframe(data.diag.tail(100), width='stretch', height=400)
             else:
                 st.info("No diagnostics data available")
         
@@ -1032,8 +1141,8 @@ def render_diagnostics_page(data: DashboardData) -> None:
             if not turnover_metrics.series.empty:
                 turnover_df = turnover_metrics.series.to_frame("turnover")
                 turnover_df["cumulative"] = turnover_df["turnover"].cumsum()
-                st.dataframe(turnover_df.tail(100), use_container_width=True, height=400)
+                st.dataframe(turnover_df.tail(100), width='stretch', height=400)
         
         with tabs[2]:
             if not concentration_metrics.time_series.empty:
-                st.dataframe(concentration_metrics.time_series.tail(100), use_container_width=True, height=400)
+                st.dataframe(concentration_metrics.time_series.tail(100), width='stretch', height=400)

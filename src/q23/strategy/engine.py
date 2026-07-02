@@ -350,8 +350,17 @@ class StrategyEngine:
         pinned: Optional[Sequence[str]] = None,
         exchanges: Optional[Sequence[str]] = None,
         tag: Optional[str] = None,
+        force_live_data: bool = False,
     ) -> EngineArtifacts:
-        """Run the full pipeline and write outputs."""
+        """Run the full pipeline and write outputs.
+        
+        Args:
+            bundle: Optional pre-loaded MarketDataBundle (if None, will load)
+            pinned: Optional list of pinned asset IDs
+            exchanges: Optional exchange filters
+            tag: Optional tag for output files
+            force_live_data: Force fetching latest Marketstack data even if no gap detected
+        """
         _require_xr()
 
         # 1) Load data
@@ -360,6 +369,9 @@ class StrategyEngine:
                 min_date=cfg.strategy.MIN_DATE,
                 exchanges=exchanges,
                 pinned=pinned,
+                fill_recent_days=cfg.marketstack.DEFAULT_LOOKBACK_DAYS,
+                use_marketstack=cfg.marketstack.ENABLED,
+                force_live_data=force_live_data,
             )
 
         ds = bundle.data

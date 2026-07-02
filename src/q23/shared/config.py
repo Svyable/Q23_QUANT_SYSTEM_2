@@ -249,15 +249,58 @@ class BenchmarkConfig:
 
 
 @dataclass
+class MarketstackConfig:
+    """Marketstack API configuration for real-time data fetching."""
+    API_KEY: str = field(default_factory=lambda: os.getenv("MARKETSTACK_API_KEY", ""))
+    ENABLED: bool = True
+    DEFAULT_LOOKBACK_DAYS: int = 5
+    BASE_URL: str = "http://api.marketstack.com/v1"
+    RATE_LIMIT_DELAY: float = 0.1  # seconds between requests
+    FORCE_LIVE_DATA: bool = False  # Force fetching latest data even if no gap detected
+    PRE_MARKET_CUTOFF_HOUR: int = 9  # Hour (ET) before which we consider it pre-market
+    POST_MARKET_CUTOFF_HOUR: int = 16  # Hour (ET) after which today's data should be available
+
+
+@dataclass
+class DatabaseConfig:
+    """PostgreSQL database configuration for local market data storage."""
+    HOST: str = field(default_factory=lambda: os.getenv("Q23_DB_HOST", "localhost"))
+    PORT: int = field(default_factory=lambda: int(os.getenv("Q23_DB_PORT", "5432")))
+    NAME: str = field(default_factory=lambda: os.getenv("Q23_DB_NAME", "q23_ndx"))
+    USER: str = field(default_factory=lambda: os.getenv("Q23_DB_USER", os.getenv("USER", "postgres")))
+    PASSWORD: str = field(default_factory=lambda: os.getenv("Q23_DB_PASSWORD", ""))
+    POOL_SIZE: int = 5  # Connection pool size
+    MAX_OVERFLOW: int = 10  # Maximum overflow connections
+    
+    @property
+    def connection_string(self) -> str:
+        """Generate PostgreSQL connection string."""
+        if self.PASSWORD:
+            return f"postgresql://{self.USER}:{self.PASSWORD}@{self.HOST}:{self.PORT}/{self.NAME}"
+        else:
+            return f"postgresql://{self.USER}@{self.HOST}:{self.PORT}/{self.NAME}"
+    
+    def validate(self) -> None:
+        """Validate database configuration."""
+        if not self.NAME:
+            raise ValueError("Database name cannot be empty")
+        if not (1 <= self.PORT <= 65535):
+            raise ValueError(f"Database port must be between 1 and 65535, got {self.PORT}")
+
+
+@dataclass
 class GlobalConfig:
     paths: PathConfig = field(default_factory=PathConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     tc: TransactionCostConfig = field(default_factory=TransactionCostConfig)
+    marketstack: MarketstackConfig = field(default_factory=MarketstackConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
 
 
 # Singleton instance
 cfg = GlobalConfig()
 cfg.strategy.validate()
 cfg.tc.validate()
+cfg.database.validate()
