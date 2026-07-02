@@ -35,6 +35,9 @@ Thumbs.db
 *.temp
 .cache/
 
+# Test artifacts
+.pytest_cache/
+
 # Sensitive files (auto-detected)
 .env
 
